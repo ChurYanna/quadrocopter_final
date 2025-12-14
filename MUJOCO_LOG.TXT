@@ -1,0 +1,66 @@
+Mon Nov  3 22:49:44 2025
+ERROR: could not create window
+
+Mon Nov  3 22:50:58 2025
+ERROR: could not create window
+
+Mon Nov  3 22:54:55 2025
+ERROR: could not create window
+
+Mon Nov  3 22:55:06 2025
+ERROR: could not create window
+
+Mon Nov  3 22:55:28 2025
+ERROR: could not create window
+
+Mon Nov  3 23:03:39 2025
+ERROR: could not create window
+
+Mon Nov  3 23:06:02 2025
+ERROR: could not create window
+
+Mon Nov  3 23:06:14 2025
+ERROR: could not create window
+
+Mon Nov  3 23:10:42 2025
+ERROR: could not create window
+
+Mon Nov  3 23:20:25 2025
+ERROR: could not create window
+
+Sat Nov  8 16:21:41 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 3.9600.
+
+Sun Nov  9 21:20:37 2025
+WARNING: Nan, Inf or huge value in CTRL at ACTUATOR 0. The simulation is unstable. Time = 16.2500.
+
+Sun Nov  9 21:26:06 2025
+WARNING: Nan, Inf or huge value in CTRL at ACTUATOR 0. The simulation is unstable. Time = 8.7500.
+
+Tue Nov 11 15:57:13 2025
+ERROR: mj_setKeyframe: keyframe index cannot be negative
+
+Sun Nov 23 16:00:39 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 7. The simulation is unstable. Time = 26.6800.
+
+Sun Nov 23 16:21:04 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 15. The simulation is unstable. Time = 35.7800.
+
+Sun Nov 23 16:56:10 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 12. The simulation is unstable. Time = 18.7800.
+
+Sun Dec  7 19:38:18 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 12. The simulation is unstable. Time = 7.8800.
+
+Wed Dec 10 19:14:11 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 13. The simulation is unstable. Time = 22.1900.
+
+Wed Dec 10 19:15:56 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 6. The simulation is unstable. Time = 14.8200.
+
+Wed Dec 10 20:47:32 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 6. The simulation is unstable. Time = 33.0500.
+
+Wed Dec 10 21:11:08 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 12. The simulation is unstable. Time = 19.0200.
+

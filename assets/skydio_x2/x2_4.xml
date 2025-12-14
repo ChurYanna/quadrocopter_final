@@ -1,0 +1,172 @@
+<mujoco model="Skydio X2">
+    <compiler autolimits="true" assetdir="assets"/>
+
+    <option timestep="0.01" density="1.225" viscosity="1.8e-5"/>
+
+    <default>
+        <default class="x2">
+            <geom mass="0"/>
+            <motor ctrlrange="0 13"/>
+            <mesh scale="0.01 0.01 0.01"/>
+            <default class="visual">
+                <geom group="2" type="mesh" contype="0" conaffinity="0"/>
+            </default>
+            <default class="collision">
+                <geom group="3" type="box"/>
+                <default class="rotor">
+                    <geom type="ellipsoid" size=".13 .13 .01"/>
+                </default>
+            </default>
+            <site group="5"/>
+        </default>
+    </default>
+
+    <asset>
+        <texture type="2d" file="X2_lowpoly_texture_SpinningProps_1024.png"/>
+        <material name="phong3SG" texture="X2_lowpoly_texture_SpinningProps_1024"/>
+        <material name="invisible" rgba="0 0 0 0"/>
+        <mesh class="x2" file="X2_lowpoly.obj"/>
+    </asset>
+
+    <worldbody>
+        <light name="spotlight" mode="targetbodycom" target="x2_1" pos="0 -1 2"/>
+        
+        <!-- 第一架无人机 -->
+        <body name="x2_1" pos="0.0 0.0 0.1" childclass="x2">
+            <freejoint/>
+            <camera name="q1_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
+            <site name="q1_imu" pos="0 0 .02"/>
+            <geom material="phong3SG" mesh="X2_lowpoly" class="visual" quat="0 0 1 1"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .02"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .06"/>
+            <geom class="collision" size=".05 .027 .02" pos="-.07 0 .065"/>
+            <geom class="collision" size=".023 .017 .01" pos="-.137 .008 .065" quat="1 0 0 1"/>
+            <geom name="q1_rotor1" class="rotor" pos="-.14 -.18 .05" mass=".25"/>
+            <geom name="q1_rotor2" class="rotor" pos="-.14 .18 .05" mass=".25"/>
+            <geom name="q1_rotor3" class="rotor" pos=".14 .18 .08" mass=".25"/>
+            <geom name="q1_rotor4" class="rotor" pos=".14 -.18 .08" mass=".25"/>
+            <geom size=".16 .04 .02" pos="0 0 0.02" type="ellipsoid" mass=".325" class="visual" material="invisible"/>
+            <site name="q1_thrust1" pos="-.14 -.18 .05"/>
+            <site name="q1_thrust2" pos="-.14 .18 .05"/>
+            <site name="q1_thrust3" pos=".14 .18 .08"/>
+            <site name="q1_thrust4" pos=".14 -.18 .08"/>
+        </body>
+
+        <!-- 第二架无人机 -->
+        <body name="x2_2" pos="0.5 -0.5 0.1" childclass="x2">
+            <freejoint/>
+            <camera name="q2_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
+            <site name="q2_imu" pos="0 0 .02"/>
+            <geom material="phong3SG" mesh="X2_lowpoly" class="visual" quat="0 0 1 1"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .02"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .06"/>
+            <geom class="collision" size=".05 .027 .02" pos="-.07 0 .065"/>
+            <geom class="collision" size=".023 .017 .01" pos="-.137 .008 .065" quat="1 0 0 1"/>
+            <geom name="q2_rotor1" class="rotor" pos="-.14 -.18 .05" mass=".25"/>
+            <geom name="q2_rotor2" class="rotor" pos="-.14 .18 .05" mass=".25"/>
+            <geom name="q2_rotor3" class="rotor" pos=".14 .18 .08" mass=".25"/>
+            <geom name="q2_rotor4" class="rotor" pos=".14 -.18 .08" mass=".25"/>
+            <geom size=".16 .04 .02" pos="0 0 0.02" type="ellipsoid" mass=".325" class="visual" material="invisible"/>
+            <site name="q2_thrust1" pos="-.14 -.18 .05"/>
+            <site name="q2_thrust2" pos="-.14 .18 .05"/>
+            <site name="q2_thrust3" pos=".14 .18 .08"/>
+            <site name="q2_thrust4" pos=".14 -.18 .08"/>
+        </body>
+
+        <!-- 第三架无人机 -->
+        <body name="x2_3" pos="0.5 0.5 0.1" childclass="x2">
+            <freejoint/>
+            <camera name="q3_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
+            <site name="q3_imu" pos="0 0 .02"/>
+            <geom material="phong3SG" mesh="X2_lowpoly" class="visual" quat="0 0 1 1"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .02"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .06"/>
+            <geom class="collision" size=".05 .027 .02" pos="-.07 0 .065"/>
+            <geom class="collision" size=".023 .017 .01" pos="-.137 .008 .065" quat="1 0 0 1"/>
+            <geom name="q3_rotor1" class="rotor" pos="-.14 -.18 .05" mass=".25"/>
+            <geom name="q3_rotor2" class="rotor" pos="-.14 .18 .05" mass=".25"/>
+            <geom name="q3_rotor3" class="rotor" pos=".14 .18 .08" mass=".25"/>
+            <geom name="q3_rotor4" class="rotor" pos=".14 -.18 .08" mass=".25"/>
+            <geom size=".16 .04 .02" pos="0 0 0.02" type="ellipsoid" mass=".325" class="visual" material="invisible"/>
+            <site name="q3_thrust1" pos="-.14 -.18 .05"/>
+            <site name="q3_thrust2" pos="-.14 .18 .05"/>
+            <site name="q3_thrust3" pos=".14 .18 .08"/>
+            <site name="q3_thrust4" pos=".14 -.18 .08"/>
+        </body>
+
+        <!-- 第四架无人机 -->
+        <body name="x2_4" pos="1.0 -1.0 0.1" childclass="x2">
+            <freejoint/>
+            <camera name="q4_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
+            <site name="q4_imu" pos="0 0 .02"/>
+            <geom material="phong3SG" mesh="X2_lowpoly" class="visual" quat="0 0 1 1"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .02"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .06"/>
+            <geom class="collision" size=".05 .027 .02" pos="-.07 0 .065"/>
+            <geom class="collision" size=".023 .017 .01" pos="-.137 .008 .065" quat="1 0 0 1"/>
+            <geom name="q4_rotor1" class="rotor" pos="-.14 -.18 .05" mass=".25"/>
+            <geom name="q4_rotor2" class="rotor" pos="-.14 .18 .05" mass=".25"/>
+            <geom name="q4_rotor3" class="rotor" pos=".14 .18 .08" mass=".25"/>
+            <geom name="q4_rotor4" class="rotor" pos=".14 -.18 .08" mass=".25"/>
+            <geom size=".16 .04 .02" pos="0 0 0.02" type="ellipsoid" mass=".325" class="visual" material="invisible"/>
+            <site name="q4_thrust1" pos="-.14 -.18 .05"/>
+            <site name="q4_thrust2" pos="-.14 .18 .05"/>
+            <site name="q4_thrust3" pos=".14 .18 .08"/>
+            <site name="q4_thrust4" pos=".14 -.18 .08"/>
+        </body>
+    </worldbody>
+
+    <actuator>
+        <!-- 第一架无人机电机 -->
+        <motor class="x2" name="q1_thrust1" site="q1_thrust1" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q1_thrust2" site="q1_thrust2" gear="0 0 1 0 0 -.0201"/>
+        <motor class="x2" name="q1_thrust3" site="q1_thrust3" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q1_thrust4" site="q1_thrust4" gear="0 0 1 0 0 -.0201"/>
+
+        <!-- 第二架无人机电机 -->
+        <motor class="x2" name="q2_thrust1" site="q2_thrust1" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q2_thrust2" site="q2_thrust2" gear="0 0 1 0 0 -.0201"/>
+        <motor class="x2" name="q2_thrust3" site="q2_thrust3" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q2_thrust4" site="q2_thrust4" gear="0 0 1 0 0 -.0201"/>
+
+        <!-- 第三架无人机电机 -->
+        <motor class="x2" name="q3_thrust1" site="q3_thrust1" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q3_thrust2" site="q3_thrust2" gear="0 0 1 0 0 -.0201"/>
+        <motor class="x2" name="q3_thrust3" site="q3_thrust3" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q3_thrust4" site="q3_thrust4" gear="0 0 1 0 0 -.0201"/>
+
+        <!-- 第四架无人机电机 -->
+        <motor class="x2" name="q4_thrust1" site="q4_thrust1" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q4_thrust2" site="q4_thrust2" gear="0 0 1 0 0 -.0201"/>
+        <motor class="x2" name="q4_thrust3" site="q4_thrust3" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q4_thrust4" site="q4_thrust4" gear="0 0 1 0 0 -.0201"/>
+    </actuator>
+
+    <keyframe>
+        <key name="hover"
+             qpos="0 0 .3 1 0 0 0 0.5 -0.5 0.3 1 0 0 0 0.5 0.5 0.3 1 0 0 0 1.0 -1.0 0.3 1 0 0 0"
+             ctrl="3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625"/>
+    </keyframe>
+
+    <sensor>
+        <!-- 第一架无人机传感器 -->
+        <gyro name="q1_body_gyro" site="q1_imu"/>
+        <accelerometer name="q1_body_linacc" site="q1_imu"/>
+        <framequat name="q1_body_quat" objtype="site" objname="q1_imu"/>
+
+        <!-- 第二架无人机传感器 -->
+        <gyro name="q2_body_gyro" site="q2_imu"/>
+        <accelerometer name="q2_body_linacc" site="q2_imu"/>
+        <framequat name="q2_body_quat" objtype="site" objname="q2_imu"/>
+
+        <!-- 第三架无人机传感器 -->
+        <gyro name="q3_body_gyro" site="q3_imu"/>
+        <accelerometer name="q3_body_linacc" site="q3_imu"/>
+        <framequat name="q3_body_quat" objtype="site" objname="q3_imu"/>
+
+        <!-- 第四架无人机传感器 -->
+        <gyro name="q4_body_gyro" site="q4_imu"/>
+        <accelerometer name="q4_body_linacc" site="q4_imu"/>
+        <framequat name="q4_body_quat" objtype="site" objname="q4_imu"/>
+    </sensor>
+</mujoco>
