@@ -62,18 +62,18 @@ class OrientationController:
         dqd: np.ndarray = (parameter.orid - self._qd_prev) / self._ts
         ddqd: np.ndarray = (dqd - self._dqd_prev) / self._ts
 
-        psi = wrap(parameter.psi)[0]
-        psid = wrap(parameter.psid)
+        # IMPORTANT: 不要修改测量到的 yaw(psi)。
+        # 这里只需要把期望 yaw 选择到与当前 psi 最接近的等价角度，使得误差是 wrap 后的小量。
+        psi = wrap(parameter.ori[2])[0]
+        psid_wrapped = wrap(parameter.psid)[0]
+        yaw_err = wrap(psid_wrapped - psi)[0]
+        psid_for_pid = psi + yaw_err
 
-        if psi - psid[0] > np.pi:
-            psi += (psid[1] - 1) * 2 * np.pi
-        elif psi - psid[0] < -np.pi:
-            psi += (psid[1] + 1) * 2 * np.pi
-        else:
-            psi += psid[1] * 2 * np.pi
-        parameter.psi = psi
-
-        pid_outs = [self._pid_controllers[i].control(parameter.orid[i], parameter.ori[i]) for i in range(self._dof)]
+        pid_outs = [
+            self._pid_controllers[0].control(parameter.orid[0], parameter.ori[0]),
+            self._pid_controllers[1].control(parameter.orid[1], parameter.ori[1]),
+            self._pid_controllers[2].control(psid_for_pid, psi),
+        ]
 
         self._qd_prev = np.array(parameter.orid)
         self._dqd_prev = np.array(dqd)

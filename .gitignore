@@ -108,6 +108,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.local
 .venv
 env/
 venv/
@@ -139,3 +140,6 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# Local runtime artifacts
+logs/
+MUJOCO_LOG.TXT

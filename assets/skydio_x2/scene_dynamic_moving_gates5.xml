@@ -1,4 +1,4 @@
-<mujoco model="Skydio X2">
+<mujoco model="Skydio X2 dynamic moving gates scene">
     <compiler autolimits="true" assetdir="assets"/>
 
     <option timestep="0.01" density="1.225" viscosity="1.8e-5"/>
@@ -22,16 +22,42 @@
     </default>
 
     <asset>
+        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+            markrgb="0.8 0.8 0.8" width="300" height="300"/>
+        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
         <texture type="2d" file="X2_lowpoly_texture_SpinningProps_1024.png"/>
         <material name="phong3SG" texture="X2_lowpoly_texture_SpinningProps_1024"/>
         <material name="invisible" rgba="0 0 0 0"/>
+        <material name="gate_material_a" rgba="0.82 0.35 0.28 1" specular="0.3" shininess="0.4"/>
+        <material name="gate_material_b" rgba="0.30 0.65 0.85 1" specular="0.3" shininess="0.4"/>
+        <material name="gate_material_c" rgba="0.35 0.82 0.45 1" specular="0.3" shininess="0.4"/>
         <mesh class="x2" file="X2_lowpoly.obj"/>
     </asset>
 
     <worldbody>
-        <light name="spotlight" mode="targetbodycom" target="x2_1" pos="0 -1 2"/>
-        
-        <!-- 第一架无人机 -->
+        <light name="spotlight" mode="targetbodycom" target="x2_1" pos="1 -2 3"/>
+        <light pos="0 0 4" dir="0 0 -1" directional="true"/>
+        <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+        <!--
+            三个可左右移动的窄门：
+            - XML 中先给出初始位置；
+            - 运行时由测试脚本直接修改 geom 的 y 坐标，实现左右平移；
+            - 三个门均较窄，要求五架无人机在动态情况下依次无缝穿越。
+        -->
+        <geom name="gate1_left_post" type="box" pos="6.0 -0.96 0.92" size="0.24 0.30 0.92" material="gate_material_a"/>
+        <geom name="gate1_right_post" type="box" pos="6.0 0.96 0.92" size="0.24 0.30 0.92" material="gate_material_a"/>
+        <geom name="gate1_top_beam" type="box" pos="6.0 0.00 1.72" size="0.24 1.26 0.18" material="gate_material_a"/>
+
+        <geom name="gate2_left_post" type="box" pos="13.0 -0.96 0.92" size="0.24 0.30 0.92" material="gate_material_b"/>
+        <geom name="gate2_right_post" type="box" pos="13.0 0.96 0.92" size="0.24 0.30 0.92" material="gate_material_b"/>
+        <geom name="gate2_top_beam" type="box" pos="13.0 0.00 1.72" size="0.24 1.26 0.18" material="gate_material_b"/>
+
+        <geom name="gate3_left_post" type="box" pos="20.0 -0.96 0.92" size="0.24 0.30 0.92" material="gate_material_c"/>
+        <geom name="gate3_right_post" type="box" pos="20.0 0.96 0.92" size="0.24 0.30 0.92" material="gate_material_c"/>
+        <geom name="gate3_top_beam" type="box" pos="20.0 0.00 1.72" size="0.24 1.26 0.18" material="gate_material_c"/>
+
         <body name="x2_1" pos="0.0 0.0 0.1" childclass="x2">
             <freejoint/>
             <camera name="q1_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
@@ -52,8 +78,7 @@
             <site name="q1_thrust4" pos=".14 -.18 .08"/>
         </body>
 
-        <!-- 第二架无人机 -->
-        <body name="x2_2" pos="0.5 -0.5 0.1" childclass="x2">
+        <body name="x2_2" pos="0.0 1.0 0.1" childclass="x2">
             <freejoint/>
             <camera name="q2_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
             <site name="q2_imu" pos="0 0 .02"/>
@@ -73,8 +98,7 @@
             <site name="q2_thrust4" pos=".14 -.18 .08"/>
         </body>
 
-        <!-- 第三架无人机 -->
-        <body name="x2_3" pos="0.5 0.5 0.1" childclass="x2">
+        <body name="x2_3" pos="0.0 -1.0 0.1" childclass="x2">
             <freejoint/>
             <camera name="q3_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
             <site name="q3_imu" pos="0 0 .02"/>
@@ -94,8 +118,7 @@
             <site name="q3_thrust4" pos=".14 -.18 .08"/>
         </body>
 
-        <!-- 第四架无人机 -->
-        <body name="x2_4" pos="1.0 -1.0 0.1" childclass="x2">
+        <body name="x2_4" pos="0.0 2.0 0.1" childclass="x2">
             <freejoint/>
             <camera name="q4_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
             <site name="q4_imu" pos="0 0 .02"/>
@@ -114,59 +137,80 @@
             <site name="q4_thrust3" pos=".14 .18 .08"/>
             <site name="q4_thrust4" pos=".14 -.18 .08"/>
         </body>
+
+        <body name="x2_5" pos="0.0 -2.0 0.1" childclass="x2">
+            <freejoint/>
+            <camera name="q5_track" pos="-1 0 .5" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
+            <site name="q5_imu" pos="0 0 .02"/>
+            <geom material="phong3SG" mesh="X2_lowpoly" class="visual" quat="0 0 1 1"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .02"/>
+            <geom class="collision" size=".06 .027 .02" pos=".04 0 .06"/>
+            <geom class="collision" size=".05 .027 .02" pos="-.07 0 .065"/>
+            <geom class="collision" size=".023 .017 .01" pos="-.137 .008 .065" quat="1 0 0 1"/>
+            <geom name="q5_rotor1" class="rotor" pos="-.14 -.18 .05" mass=".25"/>
+            <geom name="q5_rotor2" class="rotor" pos="-.14 .18 .05" mass=".25"/>
+            <geom name="q5_rotor3" class="rotor" pos=".14 .18 .08" mass=".25"/>
+            <geom name="q5_rotor4" class="rotor" pos=".14 -.18 .08" mass=".25"/>
+            <geom size=".16 .04 .02" pos="0 0 0.02" type="ellipsoid" mass=".325" class="visual" material="invisible"/>
+            <site name="q5_thrust1" pos="-.14 -.18 .05"/>
+            <site name="q5_thrust2" pos="-.14 .18 .05"/>
+            <site name="q5_thrust3" pos=".14 .18 .08"/>
+            <site name="q5_thrust4" pos=".14 -.18 .08"/>
+        </body>
     </worldbody>
 
     <actuator>
-        <!-- 第一架无人机电机 -->
         <motor class="x2" name="q1_thrust1" site="q1_thrust1" gear="0 0 1 0 0  .0201"/>
         <motor class="x2" name="q1_thrust2" site="q1_thrust2" gear="0 0 1 0 0 -.0201"/>
         <motor class="x2" name="q1_thrust3" site="q1_thrust3" gear="0 0 1 0 0  .0201"/>
         <motor class="x2" name="q1_thrust4" site="q1_thrust4" gear="0 0 1 0 0 -.0201"/>
 
-        <!-- 第二架无人机电机 -->
         <motor class="x2" name="q2_thrust1" site="q2_thrust1" gear="0 0 1 0 0  .0201"/>
         <motor class="x2" name="q2_thrust2" site="q2_thrust2" gear="0 0 1 0 0 -.0201"/>
         <motor class="x2" name="q2_thrust3" site="q2_thrust3" gear="0 0 1 0 0  .0201"/>
         <motor class="x2" name="q2_thrust4" site="q2_thrust4" gear="0 0 1 0 0 -.0201"/>
 
-        <!-- 第三架无人机电机 -->
         <motor class="x2" name="q3_thrust1" site="q3_thrust1" gear="0 0 1 0 0  .0201"/>
         <motor class="x2" name="q3_thrust2" site="q3_thrust2" gear="0 0 1 0 0 -.0201"/>
         <motor class="x2" name="q3_thrust3" site="q3_thrust3" gear="0 0 1 0 0  .0201"/>
         <motor class="x2" name="q3_thrust4" site="q3_thrust4" gear="0 0 1 0 0 -.0201"/>
 
-        <!-- 第四架无人机电机 -->
         <motor class="x2" name="q4_thrust1" site="q4_thrust1" gear="0 0 1 0 0  .0201"/>
         <motor class="x2" name="q4_thrust2" site="q4_thrust2" gear="0 0 1 0 0 -.0201"/>
         <motor class="x2" name="q4_thrust3" site="q4_thrust3" gear="0 0 1 0 0  .0201"/>
         <motor class="x2" name="q4_thrust4" site="q4_thrust4" gear="0 0 1 0 0 -.0201"/>
+
+        <motor class="x2" name="q5_thrust1" site="q5_thrust1" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q5_thrust2" site="q5_thrust2" gear="0 0 1 0 0 -.0201"/>
+        <motor class="x2" name="q5_thrust3" site="q5_thrust3" gear="0 0 1 0 0  .0201"/>
+        <motor class="x2" name="q5_thrust4" site="q5_thrust4" gear="0 0 1 0 0 -.0201"/>
     </actuator>
 
     <keyframe>
         <key name="hover"
-             qpos="0 0 .3 1 0 0 0 0.5 -0.5 0.3 1 0 0 0 0.5 0.5 0.3 1 0 0 0 1.0 -1.0 0.3 1 0 0 0"
-             ctrl="3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625"/>
+             qpos="0.0 0.0 0.3 1 0 0 0 0.0 1.0 0.3 1 0 0 0 0.0 -1.0 0.3 1 0 0 0 0.0 2.0 0.3 1 0 0 0 0.0 -2.0 0.3 1 0 0 0"
+             ctrl="3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625 3.2495625"/>
     </keyframe>
 
     <sensor>
-        <!-- 第一架无人机传感器 -->
         <gyro name="q1_body_gyro" site="q1_imu"/>
         <accelerometer name="q1_body_linacc" site="q1_imu"/>
         <framequat name="q1_body_quat" objtype="site" objname="q1_imu"/>
 
-        <!-- 第二架无人机传感器 -->
         <gyro name="q2_body_gyro" site="q2_imu"/>
         <accelerometer name="q2_body_linacc" site="q2_imu"/>
         <framequat name="q2_body_quat" objtype="site" objname="q2_imu"/>
 
-        <!-- 第三架无人机传感器 -->
         <gyro name="q3_body_gyro" site="q3_imu"/>
         <accelerometer name="q3_body_linacc" site="q3_imu"/>
         <framequat name="q3_body_quat" objtype="site" objname="q3_imu"/>
 
-        <!-- 第四架无人机传感器 -->
         <gyro name="q4_body_gyro" site="q4_imu"/>
         <accelerometer name="q4_body_linacc" site="q4_imu"/>
         <framequat name="q4_body_quat" objtype="site" objname="q4_imu"/>
+
+        <gyro name="q5_body_gyro" site="q5_imu"/>
+        <accelerometer name="q5_body_linacc" site="q5_imu"/>
+        <framequat name="q5_body_quat" objtype="site" objname="q5_imu"/>
     </sensor>
 </mujoco>

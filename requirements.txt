@@ -1,0 +1,6 @@
+# Minimal runtime/test dependencies for this repo
+numpy
+matplotlib
+mujoco
+spatialmath-python
+pytest

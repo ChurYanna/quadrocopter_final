@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import copy
-import math
+from typing import Optional
 
 import numpy as np
 
@@ -11,612 +13,622 @@ from ..velocity_controller import VelocityController
 
 
 class FormationController:
-    # def __init__(self, kps: list, kis: list, kds: list, model: Model, count: int, ts=0.001, position_gain=0.0) -> None:
-    #     super().__init__()
-    #     self._model = copy.deepcopy(model)
-    #     self._count = count
-    #     self._velocity_controllers = [
-    #         VelocityController(kps[0: 3], kis[0: 3], kds[0: 3], self._model, ts=ts, position_gain=position_gain) for _
-    #         in range(self._count)]
-    #     self._orientation_controllers = [OrientationController(kps[3: 6], kis[3: 6], kds[3: 6], self._model, ts=ts) for
-    #                                      _ in range(self._count)]
+    """多机编队控制器（控制与编队解耦后的版本）。
 
-    # def control(self, parameters: list[Parameter], formation: Formation):
+    你可以把它理解成两层：
+    1) reference 生成（编队层）：由 formation 提供。
+        - 传统几何编队：formation.cal_deltas(psi) -> offsets
+        - 轨迹主导编队：formation.reference(...) -> (pos_ref_all, vel_ref_all)
+    2) reference 跟踪（控制层）：由本控制器完成。
+        - 输出每架机的 dposd/psid，然后调用 VelocityController + OrientationController。
 
-    #     for i in range(1, self._count):
-    #         parameters[i].dposd = parameters[0].dposd
-    #         parameters[i].psid = parameters[0].psid
+    核心用法：
+    - 单飞阶段：外部脚本给每架机写 dposd/psid。
+    - 开启编队：调用 request_enable_formation(...)，再每步调用 update_switch() + control()。
+    - 换 leader：调用 request_change_leader(new_id) 触发一次新的 blending。
+    - 解散编队：调用 request_disable_formation()，外部脚本恢复对各机 dposd/psid 的直接控制。
 
-    #     position = [np.array([parameters[i].pos - parameters[j].pos for j in range(self._count)]).T for i in
-    #                 range(self._count)]
-    #     deltas = formation.cal_deltas(parameters[0].psi)
+    状态机：idle -> blending -> active
+    - idle：不做编队参考覆盖（外部完全控制 dposd/psid）
+    - blending：生成接入轨迹(quintic)，让 follower 平滑接入编队
+    - active：正常编队跟随（仍可限速/限加速度/限偏航速）
+    """
 
-    #     e = [np.sum(deltas[i] - position[i], 1) for i in range(self._count)]
+    def __init__(
+            self,
+            kps: list,
+            kis: list,
+            kds: list,
+            model: Model,
+            count: int,
+            ts=0.001,
+            position_gain=0.0,
+            use_formation=True,
+            blend_duration: float = 0.8,
+            tracking_mode: str = 'error_coupling',
+            leader_id: int = 0,
+            offset_pos_kp: float = 1.0,
+            offset_vel_kd: float = 0.0,
+            offset_pos_kp_z: Optional[float] = None,
+            offset_vel_kd_z: Optional[float] = None,
+            offset_max_speed: Optional[float] = None,
+            offset_max_vz: Optional[float] = None,
+            offsets_world: Optional[np.ndarray] = None,
+            offsets_ignore_yaw: bool = True,
+            dposd_slew_rate: float = 2.0,
+            dposd_slew_rate_z: Optional[float] = None,
+            yaw_blend_duration: float = 1.0,
+                yaw_hold_during_blend: bool = True,
+                yaw_rate_limit: Optional[float] = 1.0,
+            suppress_dqd_seconds: float = 2.0,
 
-    #     out = np.zeros(self._count * 4)
+                # --- collision avoidance (3D) ---
+                collision_avoid_enable: bool = True,
+                collision_safe_distance: float = 0.6,
+                collision_hard_distance: float = 0.2,
+                collision_alpha: float = 2.0,
+                collision_alpha_hard: float = 20.0,
+                collision_activation_distance: Optional[float] = None,
+                collision_projection_iters: int = 2,
+                collision_leader_weight: float = 10.0,
+    ) -> None:
+        """参数说明（只列关键的、和过渡/编队行为直接相关的）：
 
-    #     for i in range(self._count):
-    #         u1 = self._velocity_controllers[i].control(parameters[i], e[i])
-    #         orientation_controller_out = self._orientation_controllers[i].control2(parameters[i])
-    #         control_out = np.array([u1, *orientation_controller_out])
-    #         torques = self._model.assign(control_out)
-    #         out[4 * i: 4 * (i + 1)] = torques
-    #     return out
+        - ts: 控制器内部离散步长；建议与仿真 dt 保持一致。
+        - blend_duration: 开启编队/换 leader 时，接入轨迹的持续时间（秒）。越大越平滑。
+        - tracking_mode:
+            - 'offset_velocity': 以 formation 输出的 (p_ref,v_ref) 为目标，生成 dposd。
+            - 其它模式保留兼容，但当前测试主要使用 'offset_velocity'。
+        - leader_id: 当前领航机索引。
 
-    def __init__(self, kps: list, kis: list, kds: list, model: Model, count: int, ts=0.001, position_gain=0.0, use_formation=True,
-                 blend_duration: float = 1.2, gate_distance: float = 1.5, gate_vel: float = 1) -> None:
-        # 父类初始化（原有逻辑不变，父类无额外参数）
+        follower 速度生成（offset_velocity）：
+        - offset_pos_kp / offset_pos_kp_z: 位置误差 -> 速度命令（XY/Z 可分开）。
+        - offset_vel_kd / offset_vel_kd_z: 相对速度阻尼项（XY/Z 可分开）。
+        - offset_max_speed: XY 平面速度上限（m/s）。
+        - offset_max_vz: Z 方向速度上限（m/s）。
+        - dposd_slew_rate / dposd_slew_rate_z: 速度命令变化率上限（近似限加速度）。
+
+        yaw 过渡：
+        - yaw_hold_during_blend: blending 期间冻结 follower 的 psid（默认 True，可抑制切换瞬间偏航暴走）。
+        - yaw_rate_limit: active 时 follower psid 的变化率上限（rad/s）。
+
+        - suppress_dqd_seconds: 切换窗口内把 VelocityController._qd_prev 对齐到 dposd，抑制 dqd 尖峰。
+
+                三维避碰（CBF 安全滤波器，作用在 dposd 上）：
+                - collision_safe_distance: 期望的安全距离（m）。本需求设置为 0.6m。
+                - collision_hard_distance: 最后的兜底距离（m）。本需求设置为 0.2m。
+                    当两机距离逼近 hard 距离时，会更强制地推开，尽量避免进入 <0.2m。
+                - collision_activation_distance: 启用避碰约束的距离阈值（m）；None 表示默认取 safe+0.4。
+                - collision_projection_iters: 迭代投影次数（越大越接近同时满足所有 pair 约束）。
+        """
         super().__init__()
         self._model = copy.deepcopy(model)
-        self._count = count
-        self.use_formation = use_formation  # 新增：编队模式开关（默认开启）
-        # 初始化控制器（原有逻辑不变）
+        self._count = int(count)
+        self.use_formation = bool(use_formation)
+
         self._velocity_controllers = [
-            VelocityController(kps[0: 3], kis[0: 3], kds[0: 3], self._model, ts=ts, position_gain=position_gain) 
+            VelocityController(kps[0:3], kis[0:3], kds[0:3], self._model, ts=ts, position_gain=position_gain)
             for _ in range(self._count)
         ]
         self._orientation_controllers = [
-            OrientationController(kps[3: 6], kis[3: 6], kds[3: 6], self._model, ts=ts) 
+            OrientationController(kps[3:6], kis[3:6], kds[3:6], self._model, ts=ts)
             for _ in range(self._count)
         ]
-        # switch / blending state
-        # 切换状态机相关变量
-        # switch_state 表示当前切换状态：'idle' 空闲，'arming' 准备中，'rendezvous' 靠近中，
-        # 'blending' 混合过渡中，'active' 已完全进入编队
+
+        self.tracking_mode = str(tracking_mode)
+        self.leader_id = int(leader_id)
+
+        self.offset_pos_kp = float(offset_pos_kp)
+        self.offset_vel_kd = float(offset_vel_kd)
+        self.offset_pos_kp_z = float(offset_pos_kp_z) if offset_pos_kp_z is not None else None
+        self.offset_vel_kd_z = float(offset_vel_kd_z) if offset_vel_kd_z is not None else None
+        self.offset_max_speed = offset_max_speed
+        self.offset_max_vz = offset_max_vz
+        self.offsets_world = offsets_world
+        self.offsets_ignore_yaw = bool(offsets_ignore_yaw)
+
+        self.dposd_slew_rate = float(dposd_slew_rate)
+        self.dposd_slew_rate_z = float(dposd_slew_rate_z) if dposd_slew_rate_z is not None else None
+        self.yaw_blend_duration = float(yaw_blend_duration)
+        self.yaw_hold_during_blend = bool(yaw_hold_during_blend)
+        self.yaw_rate_limit = float(yaw_rate_limit) if yaw_rate_limit is not None else None
+        self.suppress_dqd_seconds = float(suppress_dqd_seconds)
+
         self.switch_state = 'idle'
-        # 外部请求标志（外部调用 request_enable_formation 会把该标志设为 True）
         self.enable_requested = False
-        # 混合（blending）参数：混合持续时间与已过时间
-        self.blend_duration = blend_duration
+        self.blend_duration = float(blend_duration)
         self.blend_elapsed = 0.0
-        # 门限（gate）：允许直接进入混合/编队的最大距离与速度差
-        self.gate_distance = gate_distance
-        self.gate_vel = gate_vel
-        # rendezvous（靠近）参数与状态，若门未满足可触发靠近行为
-        self.rendezvous_enabled = True
-        self.rendezvous_duration = None  # 动态计算：在进入 rendezvous 状态时按距离/速度确定
-        self.rendezvous_speed = 2     # 靠近时的最大移动速度（m/s）
-        self.rendezvous_timer = 0.0
-        self.rendezvous_tol = 3       # 到达靠近目标的容差（米），小于该值视为到位
-        # 保存原始 gains 与旧目标，用于混合恢复
-        self.saved_position_gains = None
-        self.old_dposds = None
-        self.old_psids = None  # 进入rendezvous/blending时保存各机当前偏航，用于偏航渐入
-        # rendezvous阶段偏航渐入窗口（秒）：避免进入rendezvous时立即大幅偏航导致姿态尖峰
-        self.rendezvous_yaw_smooth_window = 2.0
-        self._rendezvous_yaw_elapsed = 0.0
-        # 激活编队前允许的最大位置误差阈值（单位：米），超出则拒绝进入 active
-        self.activation_tol = self.rendezvous_tol
-        # 最小驻留时间：防止在 rendezvous <-> blending 之间快速来回切换（单位：秒）
-        self.rendezvous_min_time = 0.6
-        # 在从 rendezvous 开始 blending 前要求的较宽松阈值（若误差大于此值则延长 rendezvous）
-        self.blend_start_tol = self.activation_tol * 1.5
-        # 内部时间累积与上次状态变化时间（用于实现最小驻留 / 冷却）
-        self._time_accum = 0.0
-        self._last_state_change_time = 0.0
-        # 临时 position_gain 保持（由外部请求触发），用于试验脚本不再直接操作 controllers
-        # 当 _temp_hold_remaining > 0 时，position_gain 会从 0 平滑恢复到 temp_saved_position_gains
-        self._temp_hold_total = 0.0
-        self._temp_hold_remaining = 0.0
-        self._temp_saved_position_gains = None
-        # Active阶段增益二次平滑窗口（秒），用于进一步降低切换瞬态
-        self.active_gain_smooth_window = 0.5
-        self._active_gain_elapsed = 0.0
-        # Active阶段误差权重渐入窗口（秒）（B优化）：在进入active后的短窗内逐步放大编队误差权重，避免瞬时注入导致尖峰
-        self.active_error_smooth_window = 0.5
-        self._active_error_elapsed = 0.0
-        # 软饱和设置（推力与姿态角的限幅），可按需要调整或禁用
-        try:
-            mass = float(getattr(self._model, 'm', 1.0))
-        except Exception:
-            mass = 1.0
-        self.u1_min = mass * 9.81 * 0.5  # 下限 ~0.5g
-        self.u1_max = mass * 9.81 * 2.0  # 上限 ~2g
-        self.max_tilt_rad = float(np.deg2rad(30.0))  # 姿态角限幅 ±30°
-        # A优化：速度/偏航对齐判据（进入active前需满足）
-        self.align_window = 0.8  # 对齐评估滑动窗口（秒）
-        self.align_cos_thresh = 0.6  # 速度方向余弦相似度阈值（≥该值）
-        self.align_yaw_thresh_rad = float(np.deg2rad(30.0))  # 偏航误差阈值（弧度）
-        self._align_accum = 0.0
-        self._align_samples = []  # 保存最近窗口的对齐样本：[(cos_sim_i, yaw_err_i), ...]
-    # 过去可能用于暂存领航机期望速度的变量（已移除：不再在过渡期间暂停领航机）
+
+        self._blend_from_dposd: Optional[list[np.ndarray]] = None
+        self._blend_from_psid: Optional[list[float]] = None
+        self._cmd_prev_dposd: Optional[list[np.ndarray]] = None
+        self._cmd_prev_psid: Optional[list[float]] = None
+        self._join_coeffs: Optional[list[Optional[np.ndarray]]] = None
+        self._yaw_blend_elapsed = 0.0
+        self._suppress_dqd_remaining = 0.0
+        self._dt_last = 0.0
+
+        self.collision_avoid_enable = bool(collision_avoid_enable)
+        self.collision_safe_distance = float(collision_safe_distance)
+        self.collision_hard_distance = float(collision_hard_distance)
+        self.collision_alpha = float(collision_alpha)
+        self.collision_alpha_hard = float(collision_alpha_hard)
+        if collision_activation_distance is None:
+            self.collision_activation_distance = float(self.collision_safe_distance + 0.4)
+        else:
+            self.collision_activation_distance = float(collision_activation_distance)
+        self.collision_projection_iters = int(max(0, collision_projection_iters))
+        self.collision_leader_weight = float(max(1e-6, collision_leader_weight))
+
+    def _apply_collision_avoidance(
+        self,
+        parameters: list[Parameter],
+        v_nom_all: list[np.ndarray],
+        leader_id: int,
+    ) -> list[np.ndarray]:
+        """在速度命令层做三维避碰安全滤波（无外部依赖）。
+
+        形式上是把 v_nom 投影到一组线性不等式（CBF 近似）所定义的半空间交集上。
+        约束针对每一对 i-j：
+            h = ||p_i - p_j||^2 - d^2
+            h_dot + alpha * h >= 0
+        其中 h_dot = 2*(p_i-p_j)^T*(v_i-v_j)
+        => (p_i-p_j)^T*(v_i-v_j) >= -(alpha/2) * (||p_i-p_j||^2 - d^2)
+
+        这里同时做两层：safe_distance(0.6m) 与 hard_distance(0.2m)。
+        """
+        if not self.collision_avoid_enable:
+            return v_nom_all
+
+        n_agents = int(self._count)
+        if n_agents <= 1:
+            return v_nom_all
+
+        v = [np.asarray(vn, dtype=float).copy() for vn in v_nom_all]
+        pos = [np.asarray(p.pos, dtype=float).copy() for p in parameters]
+
+        d_safe = float(max(1e-6, self.collision_safe_distance))
+        d_hard = float(max(1e-6, min(self.collision_hard_distance, d_safe)))
+        d_act = float(max(d_safe, self.collision_activation_distance))
+        alpha = float(max(0.0, self.collision_alpha))
+        alpha_hard = float(max(alpha, self.collision_alpha_hard))
+
+        weights = np.ones(n_agents, dtype=float)
+        if 0 <= leader_id < n_agents:
+            weights[leader_id] = float(self.collision_leader_weight)
+
+        def project_halfspace(i: int, j: int, n: np.ndarray, b: float):
+            rel = float(np.dot(n, v[i] - v[j]))
+            if rel >= b:
+                return
+            c = float(b - rel)
+            nn = float(np.dot(n, n))
+            if nn < 1e-12:
+                return
+            wi = float(weights[i])
+            wj = float(weights[j])
+            denom = nn * (1.0 / wi + 1.0 / wj)
+            if denom < 1e-12:
+                return
+            lam = c / denom
+            v[i] = np.asarray(v[i] + (lam / wi) * n, dtype=float)
+            v[j] = np.asarray(v[j] - (lam / wj) * n, dtype=float)
+
+        iters = int(self.collision_projection_iters)
+        if iters <= 0:
+            return v
+
+        for _ in range(iters):
+            for i in range(n_agents):
+                for j in range(i + 1, n_agents):
+                    dp = pos[i] - pos[j]
+                    dist2 = float(np.dot(dp, dp))
+                    if dist2 < 1e-12:
+                        # 极端重合：随机微扰方向避免数值问题
+                        dp = np.array([1.0, 0.0, 0.0], dtype=float)
+                        dist2 = 1.0
+                    dist = float(np.sqrt(dist2))
+                    if dist > d_act:
+                        continue
+
+                    # safe layer
+                    h = dist2 - d_safe * d_safe
+                    b_safe = -0.5 * alpha * h
+                    project_halfspace(i, j, dp, b_safe)
+
+                    # hard layer (only meaningful when close)
+                    if dist < (d_safe + 1e-6):
+                        h2 = dist2 - d_hard * d_hard
+                        b_hard = -0.5 * alpha_hard * h2
+                        project_halfspace(i, j, dp, b_hard)
+
+            # 速度保护：保持与原逻辑一致
+            v = [self._clip_speed(vi) for vi in v]
+
+        return v
+
+    def set_tracking_mode(self, tracking_mode: str):
+        self.tracking_mode = str(tracking_mode)
+
+    def set_leader_id(self, leader_id: int):
+        self.leader_id = int(leader_id)
+
+    def set_offsets_world(self, offsets_world: Optional[np.ndarray]):
+        self.offsets_world = offsets_world
+
+    @staticmethod
+    def _wrap_to_pi(angle: float) -> float:
+        return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
+
+    @staticmethod
+    def _quintic_coeffs_1d(p0: float, v0: float, a0: float, p1: float, v1: float, a1: float, T: float) -> np.ndarray:
+        """Return coefficients c0..c5 for p(t)=sum c_k t^k, with boundary conditions at t=0 and t=T."""
+        T = float(max(1e-6, T))
+        c0 = float(p0)
+        c1 = float(v0)
+        c2 = float(a0) / 2.0
+
+        t2 = T * T
+        t3 = t2 * T
+        t4 = t3 * T
+        t5 = t4 * T
+
+        A = np.array([
+            [t3, t4, t5],
+            [3.0 * t2, 4.0 * t3, 5.0 * t4],
+            [6.0 * T, 12.0 * t2, 20.0 * t3],
+        ], dtype=float)
+
+        b = np.array([
+            float(p1) - (c0 + c1 * T + c2 * t2),
+            float(v1) - (c1 + 2.0 * c2 * T),
+            float(a1) - (2.0 * c2),
+        ], dtype=float)
+
+        c3, c4, c5 = np.linalg.solve(A, b)
+        return np.array([c0, c1, c2, c3, c4, c5], dtype=float)
+
+    @classmethod
+    def _quintic_coeffs_vec(cls, p0: np.ndarray, v0: np.ndarray, a0: np.ndarray,
+                            p1: np.ndarray, v1: np.ndarray, a1: np.ndarray, T: float) -> np.ndarray:
+        coeffs = np.zeros((3, 6), dtype=float)
+        for k in range(3):
+            coeffs[k, :] = cls._quintic_coeffs_1d(p0[k], v0[k], a0[k], p1[k], v1[k], a1[k], T)
+        return coeffs
+
+    @staticmethod
+    def _eval_quintic(coeffs: np.ndarray, t: float) -> tuple[np.ndarray, np.ndarray]:
+        t = float(max(0.0, t))
+        tt = np.array([1.0, t, t * t, t ** 3, t ** 4, t ** 5], dtype=float)
+        dtt = np.array([0.0, 1.0, 2.0 * t, 3.0 * t * t, 4.0 * t ** 3, 5.0 * t ** 4], dtype=float)
+        p = coeffs @ tt
+        v = coeffs @ dtt
+        return np.asarray(p, dtype=float), np.asarray(v, dtype=float)
+
+    def _get_offsets_world(self, formation: Optional[Formation], leader_psi: float) -> np.ndarray:
+        if self.offsets_world is not None:
+            offsets = np.asarray(self.offsets_world, dtype=float)
+            if offsets.ndim != 2 or offsets.shape[1] != 3:
+                raise ValueError('offsets_world must have shape (N,3)')
+            if offsets.shape[0] < self._count:
+                pad = np.zeros((self._count - offsets.shape[0], 3), dtype=float)
+                offsets = np.vstack([offsets, pad])
+            if offsets.shape[0] > self._count:
+                offsets = offsets[:self._count, :]
+            return offsets
+
+        if formation is None:
+            return np.zeros((self._count, 3), dtype=float)
+
+        psi = 0.0 if self.offsets_ignore_yaw else float(leader_psi)
+        deltas = formation.cal_deltas(psi)
+        offsets = np.asarray(deltas[0].T, dtype=float)
+        if offsets.shape != (self._count, 3):
+            offsets2 = np.zeros((self._count, 3), dtype=float)
+            n = min(self._count, offsets.shape[0])
+            offsets2[:n, :] = offsets[:n, :]
+            offsets = offsets2
+        return offsets
+
+    def _clip_speed(self, v: np.ndarray) -> np.ndarray:
+        v2 = np.asarray(v, dtype=float).copy()
+        if self.offset_max_speed is not None:
+            vmax = float(self.offset_max_speed)
+            if vmax > 0:
+                speed_xy = float(np.linalg.norm(v2[:2]))
+                if speed_xy > vmax and speed_xy > 1e-9:
+                    v2[0:2] = (v2[0:2] / speed_xy) * vmax
+        if self.offset_max_vz is not None:
+            vzmax = float(self.offset_max_vz)
+            if vzmax > 0:
+                v2[2] = float(np.clip(v2[2], -vzmax, vzmax))
+        return v2
+
+    def _slew_limit_vec(self, v_cmd: np.ndarray, v_prev: np.ndarray) -> np.ndarray:
+        dt = float(self._dt_last)
+        if dt <= 0.0 or self.dposd_slew_rate <= 0.0:
+            return np.asarray(v_cmd, dtype=float)
+        dv = np.asarray(v_cmd - v_prev, dtype=float)
+        dv_lim_xy = float(self.dposd_slew_rate) * dt
+        dv[0] = float(np.clip(dv[0], -dv_lim_xy, dv_lim_xy))
+        dv[1] = float(np.clip(dv[1], -dv_lim_xy, dv_lim_xy))
+        if self.dposd_slew_rate_z is not None and self.dposd_slew_rate_z > 0.0:
+            dv_lim_z = float(self.dposd_slew_rate_z) * dt
+            dv[2] = float(np.clip(dv[2], -dv_lim_z, dv_lim_z))
+        else:
+            dv[2] = float(np.clip(dv[2], -dv_lim_xy, dv_lim_xy))
+        return np.asarray(v_prev + dv, dtype=float)
+
+    def request_enable_formation(self, leader_id: Optional[int] = None):
+        """请求开启编队。
+
+        - 在 idle 状态下调用会进入 blending（或 blend_duration=0 时直接 active）。
+        - 如果传入 leader_id，会先切换 leader。
+        - 注意：如果已经在 active 状态，想“重新接入/换 leader”，用 request_change_leader()。
+        """
+        if leader_id is not None:
+            self.set_leader_id(int(leader_id))
+        self.enable_requested = True
+        if self.switch_state == 'idle':
+            self.switch_state = 'blending' if self.blend_duration > 0 else 'active'
+            self.blend_elapsed = 0.0
+            self._blend_from_dposd = None
+            self._blend_from_psid = None
+            self._cmd_prev_dposd = None
+            self._cmd_prev_psid = None
+            self._join_coeffs = None
+            self._yaw_blend_elapsed = 0.0
+            self._suppress_dqd_remaining = max(0.0, float(self.suppress_dqd_seconds))
+
+    def request_disable_formation(self):
+        """解散编队并回到 idle。
+
+        解散后，本控制器不再覆盖 follower 的 dposd/psid。
+        外部脚本应恢复对每架机 dposd/psid 的直接赋值（例如各自轨迹飞行）。
+        """
+        self.enable_requested = False
+        self.use_formation = False
+        self.switch_state = 'idle'
+        self.blend_elapsed = 0.0
+        self._blend_from_dposd = None
+        self._blend_from_psid = None
+        self._cmd_prev_dposd = None
+        self._cmd_prev_psid = None
+        self._join_coeffs = None
+        self._yaw_blend_elapsed = 0.0
+        self._suppress_dqd_remaining = 0.0
+
+    def get_state(self):
+        return self.switch_state
+
+    def update_switch(self, dt: float, parameters: list[Parameter], formation: Formation):
+        """推进简化状态机计时。
+
+        典型每个仿真步调用一次：
+        - 先在外部用最新 data.qpos/qvel 更新 parameters
+        - 再调用 update_switch(dt, ...)
+        - 再调用 control(parameters, formation)
+        """
+        self._dt_last = float(dt)
+        if self._suppress_dqd_remaining > 0.0:
+            self._suppress_dqd_remaining = max(0.0, self._suppress_dqd_remaining - float(dt))
+        if not self.enable_requested:
+            return
+        if self.switch_state == 'blending':
+            self.blend_elapsed += float(dt)
+            if self.blend_elapsed >= self.blend_duration:
+                self.switch_state = 'active'
+                self.enable_requested = False
+                self.use_formation = True
+        if self.switch_state == 'active':
+            self.enable_requested = False
+            self.use_formation = True
 
     def control(self, parameters: list[Parameter], formation: Formation):
-        # 1. 在 active 状态下才同步 dposd/psid（避免在 blending 阶段覆盖外部插值）
-        if self.use_formation and getattr(self, 'switch_state', 'idle') == 'active':
-            for i in range(1, self._count):
-                parameters[i].dposd = parameters[0].dposd
-                parameters[i].psid = parameters[0].psid
+        """生成每架机的控制量（推力+力矩）。
 
-        # 在 rendezvous / blending 阶段对偏航进行纠正：
-        # - rendezvous：将 followers 的 psid 渐入到 leader 的 psid，确保朝向一致。
-        # - blending：对偏航做与速度相同的线性渐入（从进入blending时保存的旧偏航 -> leader偏航）。
-        elif getattr(self, 'switch_state', 'idle') == 'rendezvous':
-            try:
-                leader_psi = parameters[0].psid
-                # 渐入：使用窗口时间线性插值到leader偏航
-                gamma = 1.0
-                if self.rendezvous_yaw_smooth_window and self.rendezvous_yaw_smooth_window > 0.0:
-                    gamma = min(1.0, self._rendezvous_yaw_elapsed / self.rendezvous_yaw_smooth_window)
-                # 若未保存旧偏航，则以当前偏航为旧值
-                if self.old_psids is None or len(self.old_psids) != self._count:
-                    self.old_psids = [p.psid for p in parameters]
-                for i in range(1, self._count):
-                    psi0 = self.old_psids[i]
-                    dpsi = math.atan2(math.sin(leader_psi - psi0), math.cos(leader_psi - psi0))
-                    parameters[i].psid = psi0 + gamma * dpsi
-            except Exception:
-                pass
-        elif getattr(self, 'switch_state', 'idle') == 'blending':
-            try:
-                leader_psi = parameters[0].psid
-                alpha = min(1.0, self.blend_elapsed / max(1e-6, self.blend_duration))
-                # 若未保存旧偏航，则以当前偏航为旧值
-                if self.old_psids is None or len(self.old_psids) != self._count:
-                    self.old_psids = [p.psid for p in parameters]
-                for i in range(1, self._count):
-                    psi0 = self.old_psids[i]
-                    # 角度插值需考虑环绕，使用最短角差线性渐入
-                    dpsi = math.atan2(math.sin(leader_psi - psi0), math.cos(leader_psi - psi0))
-                    parameters[i].psid = psi0 + alpha * dpsi
-            except Exception:
-                pass
+        输入：parameters 为每架机当前状态（pos/dpos/psi/omega 等）以及外部写入的命令(dposd/psid)。
+        输出：长度为 4*N 的控制向量（每架机 4 个电机的等效输入），用于写入 mujoco ctrl。
+        """
+        leader_id = int(np.clip(self.leader_id, 0, self._count - 1))
+        leader = parameters[leader_id]
+        leader_pos = np.asarray(leader.pos, dtype=float)
+        leader_dposd = np.asarray(leader.dposd, dtype=float)
+        leader_vel = np.asarray(getattr(leader, 'dpos', np.zeros(3)), dtype=float)
+        leader_yaw = float(getattr(leader, 'psi', 0.0))
+        leader_yaw_rate = float(np.asarray(getattr(leader, 'omega', np.zeros(3)), dtype=float)[2])
 
-        # 2. 计算位置误差：在 blending 或 active 阶段引入误差反馈；其他阶段误差为 0
-        if getattr(self, 'switch_state', 'idle') in ('blending', 'active'):
-            position = [
-                np.array([parameters[i].pos - parameters[j].pos for j in range(self._count)]).T
-                for i in range(self._count)
-            ]
-            deltas = formation.cal_deltas(parameters[0].psi)
-            e_raw = [np.sum(deltas[i] - position[i], 1) for i in range(self._count)]
-            # B优化：active初期在短窗内逐步放大误差权重（alpha_e），避免瞬时注入造成尖峰
-            if getattr(self, 'switch_state', 'idle') == 'active' and self.active_error_smooth_window and self.active_error_smooth_window > 0.0:
-                try:
-                    gamma = min(1.0, self._active_error_elapsed / self.active_error_smooth_window)
-                except Exception:
-                    gamma = 1.0
-                e = [gamma * ei for ei in e_raw]
-            else:
-                e = e_raw
+        # 参考生成优先交给 formation（如果它提供轨迹主导 reference 接口）
+        if hasattr(formation, 'reference') and callable(getattr(formation, 'reference')):
+            pos_ref_all, vel_ref_all = formation.reference(
+                leader_pos=leader_pos,
+                leader_vel=leader_vel,
+                leader_yaw=leader_yaw,
+                leader_yaw_rate=leader_yaw_rate,
+                leader_id=leader_id,
+            )
+            offsets_rel = pos_ref_all - leader_pos[None, :]
+        else:
+            offsets = self._get_offsets_world(formation, leader_yaw)
+            offsets_rel = offsets - offsets[leader_id]
+            pos_ref_all = leader_pos[None, :] + offsets_rel
+            vel_ref_all = np.tile(leader_vel[None, :], (self._count, 1))
+
+        # 生成 followers 的期望 (dposd/psid)
+        if self.switch_state in ('blending', 'active'):
+            if self._blend_from_dposd is None:
+                self._blend_from_dposd = [np.asarray(getattr(p, 'dposd', np.zeros(3))).copy() for p in parameters]
+            if self._blend_from_psid is None:
+                self._blend_from_psid = [float(getattr(p, 'psid', 0.0)) for p in parameters]
+            if self._cmd_prev_dposd is None:
+                self._cmd_prev_dposd = [np.asarray(getattr(p, 'dposd', np.zeros(3))).copy() for p in parameters]
+            if self._cmd_prev_psid is None:
+                self._cmd_prev_psid = [float(getattr(p, 'psid', 0.0)) for p in parameters]
+
+            # 在第一次进入 blending 时，为每个 follower 初始化一段接入轨迹（quintic）。
+            # 轨迹目标点使用“预测的编队点”：leader_pos + leader_vel*T + offset。
+            if self.switch_state == 'blending' and self._join_coeffs is None:
+                T_join = float(max(1e-6, self.blend_duration))
+                p_leader_pred = leader_pos + leader_vel * T_join
+                psi_pred = float(leader_yaw + leader_yaw_rate * T_join)
+                # 预测时刻的编队参考（如果 formation 支持 reference，就用它预测）
+                if hasattr(formation, 'reference') and callable(getattr(formation, 'reference')):
+                    pos_ref_pred, vel_ref_pred = formation.reference(
+                        leader_pos=p_leader_pred,
+                        leader_vel=leader_vel,
+                        leader_yaw=psi_pred,
+                        leader_yaw_rate=leader_yaw_rate,
+                        leader_id=leader_id,
+                    )
+                else:
+                    pos_ref_pred = p_leader_pred[None, :] + offsets_rel
+                    vel_ref_pred = np.tile(leader_vel[None, :], (self._count, 1))
+                self._join_coeffs = [None for _ in range(self._count)]
+                for i in range(self._count):
+                    if i == leader_id:
+                        continue
+                    p0 = np.asarray(parameters[i].pos, dtype=float)
+                    v0 = np.asarray(parameters[i].dpos, dtype=float)
+                    a0 = np.zeros(3, dtype=float)
+                    p1 = np.asarray(pos_ref_pred[i], dtype=float)
+                    v1 = np.asarray(vel_ref_pred[i], dtype=float)
+                    a1 = np.zeros(3, dtype=float)
+                    self._join_coeffs[i] = self._quintic_coeffs_vec(p0, v0, a0, p1, v1, a1, T_join)
+
+            alpha = 1.0
+            if self.switch_state == 'blending' and self.blend_duration > 0:
+                alpha = float(np.clip(self.blend_elapsed / max(1e-9, self.blend_duration), 0.0, 1.0))
+
+            yaw_alpha = 1.0
+            if self.yaw_blend_duration > 0.0:
+                self._yaw_blend_elapsed += float(self._dt_last)
+                yaw_alpha = float(np.clip(self._yaw_blend_elapsed / max(1e-9, self.yaw_blend_duration), 0.0, 1.0))
+
+            for i in range(self._count):
+                if i == leader_id:
+                    continue
+                if self.tracking_mode == 'offset_velocity':
+                    kp_z = self.offset_pos_kp if self.offset_pos_kp_z is None else float(self.offset_pos_kp_z)
+                    kd_z = self.offset_vel_kd if self.offset_vel_kd_z is None else float(self.offset_vel_kd_z)
+
+                    # blending：使用接入轨迹 (p_ref, v_ref)
+                    if self.switch_state == 'blending' and self._join_coeffs is not None and self._join_coeffs[i] is not None:
+                        T_join = float(max(1e-6, self.blend_duration))
+                        t_join = float(np.clip(self.blend_elapsed, 0.0, T_join))
+                        p_ref, v_ref = self._eval_quintic(self._join_coeffs[i], t_join)
+
+                        pos_err = p_ref - np.asarray(parameters[i].pos, dtype=float)
+                        v_act = np.asarray(parameters[i].dpos, dtype=float)
+                        v_cmd = np.zeros(3, dtype=float)
+                        v_cmd[:2] = v_ref[:2] + self.offset_pos_kp * pos_err[:2]
+                        v_cmd[2] = float(v_ref[2] + kp_z * pos_err[2])
+                        if self.offset_vel_kd > 0.0:
+                            v_cmd[:2] = v_cmd[:2] - self.offset_vel_kd * (v_act[:2] - v_ref[:2])
+                        if kd_z > 0.0:
+                            v_cmd[2] = float(v_cmd[2] - kd_z * (v_act[2] - v_ref[2]))
+                    else:
+                        # active：正常跟随 formation 给出的参考点
+                        p_ref = np.asarray(pos_ref_all[i], dtype=float)
+                        pos_err = p_ref - np.asarray(parameters[i].pos, dtype=float)
+                        v_act = np.asarray(parameters[i].dpos, dtype=float)
+                        v_ref = np.asarray(vel_ref_all[i], dtype=float)
+                        v_cmd = np.zeros(3, dtype=float)
+                        v_cmd[:2] = v_ref[:2] + self.offset_pos_kp * pos_err[:2]
+                        v_cmd[2] = float(v_ref[2] + kp_z * pos_err[2])
+                        if self.offset_vel_kd > 0.0:
+                            v_cmd[:2] = v_cmd[:2] - self.offset_vel_kd * (v_act[:2] - v_ref[:2])
+                        if kd_z > 0.0:
+                            v_cmd[2] = float(v_cmd[2] - kd_z * (v_act[2] - v_ref[2]))
+
+                    # 速度限幅与限加速度，最后再过一次限速保护
+                    v_cmd = self._clip_speed(v_cmd)
+                else:
+                    # 兼容 error_coupling 模式：这里只做速度跟随 leader（编队误差交给 e 注入）
+                    v_from = np.asarray(self._blend_from_dposd[i], dtype=float)
+                    v_cmd = (1.0 - alpha) * v_from + alpha * leader_dposd
+                v_cmd = self._clip_speed(v_cmd)
+                v_cmd = self._slew_limit_vec(v_cmd, self._cmd_prev_dposd[i])
+                v_cmd = self._clip_speed(v_cmd)
+
+                parameters[i].dposd = v_cmd
+                self._cmd_prev_dposd[i] = np.asarray(v_cmd, dtype=float)
+
+                # yaw：切换时刻大 yaw 误差会导致电机分配剧烈变化，进而耦合到总推力(Z)。
+                # 默认在 blending 期间冻结 yaw(跟随当前测量 psi)，active 再以限速方式对齐到 leader.psid。
+                dt = float(self._dt_last) if self._dt_last > 0 else float(getattr(self._velocity_controllers[i], '_ts', 0.001))
+                if self.switch_state == 'blending' and self.yaw_hold_during_blend:
+                    psid_cmd = float(parameters[i].psi)
+                else:
+                    psi_t = float(getattr(leader, 'psid', 0.0))
+                    psid_prev = float(self._cmd_prev_psid[i])
+                    dpsi = self._wrap_to_pi(psi_t - psid_prev)
+                    if self.yaw_rate_limit is not None and self.yaw_rate_limit > 0.0:
+                        max_step = float(self.yaw_rate_limit) * dt
+                        dpsi = float(np.clip(dpsi, -max_step, max_step))
+                        psid_cmd = float(psid_prev + dpsi)
+                    else:
+                        psi0 = float(self._blend_from_psid[i])
+                        dpsi0 = self._wrap_to_pi(psi_t - psi0)
+                        psid_cmd = float(psi0 + yaw_alpha * dpsi0)
+                self._cmd_prev_psid[i] = float(psid_cmd)
+                parameters[i].psid = float(psid_cmd)
+
+            # --- collision avoidance (velocity-level safety filter) ---
+            # 对 leader + followers 的 dposd 一起做安全滤波，避免靠拢/换 leader 时发生碰撞。
+            # 注意：这里的约束是三维球形距离。
+            if self.collision_avoid_enable:
+                v_nom_all = [np.asarray(getattr(p, 'dposd', np.zeros(3)), dtype=float).copy() for p in parameters]
+                v_safe_all = self._apply_collision_avoidance(parameters, v_nom_all, leader_id=leader_id)
+                for k in range(self._count):
+                    parameters[k].dposd = np.asarray(v_safe_all[k], dtype=float)
+                    if self._cmd_prev_dposd is not None:
+                        self._cmd_prev_dposd[k] = np.asarray(v_safe_all[k], dtype=float)
+
+        # error_coupling 的误差注入（保持兼容）
+        if self.use_formation and self.tracking_mode != 'offset_velocity':
+            e = [np.zeros(3) for _ in range(self._count)]
+            for i in range(self._count):
+                if i == leader_id:
+                    continue
+                desired_rel = offsets_rel[i]
+                actual_rel = np.asarray(parameters[i].pos, dtype=float) - leader_pos
+                e[i] = desired_rel - actual_rel
         else:
             e = [np.zeros(3) for _ in range(self._count)]
 
-        # 3. 计算控制力矩（共用逻辑）
         out = np.zeros(self._count * 4)
         for i in range(self._count):
-            # 速度控制器：编队模式受误差e影响，独立模式仅跟踪自身目标（e=0）
+            # suppress VelocityController dqd spike during transition window
+            if self._suppress_dqd_remaining > 0.0:
+                try:
+                    self._velocity_controllers[i]._qd_prev = np.asarray(parameters[i].dposd, dtype=float).copy()
+                except Exception:
+                    pass
             u1 = self._velocity_controllers[i].control(parameters[i], e[i])
-            # 姿态控制器：始终跟踪自身偏航角目标
             orientation_controller_out = self._orientation_controllers[i].control2(parameters[i])
-            # 软饱和：对姿态角限幅（若 orientation_controller_out 为 [phi, theta, psi] 或相似）
-            try:
-                orientation_controller_out[0] = float(np.clip(orientation_controller_out[0], -self.max_tilt_rad, self.max_tilt_rad))
-                orientation_controller_out[1] = float(np.clip(orientation_controller_out[1], -self.max_tilt_rad, self.max_tilt_rad))
-            except Exception:
-                pass
-            # 整合控制输出
             control_out = np.array([u1, *orientation_controller_out])
-            # 可选：对推力进行限幅（若 assign 前支持）
-            try:
-                control_out[0] = float(np.clip(control_out[0], self.u1_min, self.u1_max))
-            except Exception:
-                pass
             torques = self._model.assign(control_out)
             out[4 * i: 4 * (i + 1)] = torques
         return out
 
-    # ----------------- switching / blending API -----------------
-    def request_enable_formation(self):
+    def request_change_leader(self, leader_id: int):
+        """在飞行中切换领航机。
+
+        这个接口会：
+        - 更新 leader_id
+        - 触发一次新的 blending（重新生成接入轨迹）
+        - 打开 suppress_dqd 窗口
+
+        切换 leader 后，外部脚本需要把“轨迹命令”写到新的 leader 上。
+        """
+        self.set_leader_id(int(leader_id))
         self.enable_requested = True
-        if self.switch_state == 'idle':
-            self.switch_state = 'arming'
-
-    def request_disable_formation(self):
-        # immediate disable
-        self.enable_requested = False
-        self.use_formation = False
-        self.switch_state = 'idle'
-
-    def get_state(self):
-        """Return the current switch_state string."""
-        return self.switch_state
-
-    def is_gate_ok(self, parameters: list[Parameter]):
-        """Public wrapper for gate check used by external scripts for diagnostics."""
-        return self._check_gate(parameters)
-
-    def apply_temporary_position_gain_zero(self, duration: float):
-        """
-        Temporarily set all velocity controllers' position_gain to 0 and schedule a smooth
-        restore over `duration` seconds. This encapsulates the trial-script behavior so
-        external code doesn't need to touch controllers directly.
-        """
-        try:
-            # only set if not already active
-            if (self._temp_saved_position_gains is None) or (self._temp_hold_remaining <= 0):
-                self._temp_saved_position_gains = [vc.position_gain for vc in self._velocity_controllers]
-                for vc in self._velocity_controllers:
-                    vc.position_gain = 0.0
-                self._temp_hold_total = max(0.0, float(duration))
-                self._temp_hold_remaining = self._temp_hold_total
-        except Exception:
-            # best-effort; ignore failures
-            pass
-
-    def sync_qd_prev_to_leader(self, parameters: list[Parameter]):
-        """
-        Set each velocity controller's internal _qd_prev to the leader's current dposd
-        to avoid a differential jump when switching targets. Safe no-op if attribute missing.
-        """
-        try:
-            leader_dposd = parameters[0].dposd.copy()
-            for vc in self._velocity_controllers:
-                try:
-                    if hasattr(vc, '_qd_prev'):
-                        vc._qd_prev = leader_dposd.copy()
-                    # reset pids to avoid integral windup
-                    for pid in getattr(vc, '_pid_controllers', []):
-                        try:
-                            pid.reset()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def _check_gate(self, parameters: list[Parameter]):
-        # check max distance to leader and max velocity difference
-        try:
-            leader_pos = parameters[0].pos
-            leader_vel = parameters[0].dq[:3]
-            dists = [np.linalg.norm(parameters[i].pos - leader_pos) for i in range(1, self._count)]
-            vel_diffs = [np.linalg.norm(parameters[i].dq[:3] - leader_vel) for i in range(1, self._count)]
-            max_dist = max(dists) if dists else 0.0
-            max_vel = max(vel_diffs) if vel_diffs else 0.0
-            return (max_dist <= self.gate_distance) and (max_vel <= self.gate_vel)
-        except Exception:
-            return False
-
-    def _compute_rendezvous_duration(self, parameters: list[Parameter]) -> float:
-        """
-        根据当前最远无人机到领航机的距离与 rendezvous_speed 动态计算靠近时长（秒）：ceil(max_dist / speed)。
-        失败或速度非法时，返回当前 self.rendezvous_duration 作为回退。
-        """
-        try:
-            speed = float(self.rendezvous_speed)
-        except Exception:
-            speed = 0.0
-        if speed <= 0.0:
-            return float(self.rendezvous_duration)
-        try:
-            leader_pos = parameters[0].pos
-            dists = [np.linalg.norm(parameters[i].pos - leader_pos) for i in range(1, self._count)]
-            max_dist = max(dists) if dists else 0.0
-            duration = math.ceil(max_dist / speed)
-            return float(max(1, duration))
-        except Exception:
-            return float(self.rendezvous_duration)
-
-    def update_switch(self, dt: float, parameters: list[Parameter], formation: Formation):
-        """
-        Advance the enable/disable state machine. This will modify parameters[*].dposd during blending.
-        """
-        # advance internal time accumulator (for dwell/hysteresis)
-        self._time_accum += dt
-        # 维护A优化的滑动窗口计时与样本收集（用于速度方向与偏航对齐评估）
-        try:
-            self._align_accum += dt
-            # 收集当前样本：对followers计算与leader速度方向的余弦相似度与偏航误差
-            leader_vel = parameters[0].dq[:3]
-            leader_yaw = parameters[0].psi
-            # 领航速度方向
-            lv_norm = np.linalg.norm(leader_vel)
-            lv_dir = leader_vel / lv_norm if lv_norm > 1e-6 else np.zeros(3)
-            cos_list = []
-            yaw_err_list = []
-            for i in range(1, self._count):
-                fv = parameters[i].dq[:3]
-                fv_norm = np.linalg.norm(fv)
-                fv_dir = fv / fv_norm if fv_norm > 1e-6 else np.zeros(3)
-                # 只考虑水平分量方向对齐（x,y），以减少竖直速度干扰
-                lv_xy = lv_dir[:2]
-                fv_xy = fv_dir[:2]
-                lv_xy_norm = np.linalg.norm(lv_xy)
-                fv_xy_norm = np.linalg.norm(fv_xy)
-                if lv_xy_norm > 1e-6 and fv_xy_norm > 1e-6:
-                    cos_sim = float(np.clip(np.dot(lv_xy, fv_xy) / (lv_xy_norm * fv_xy_norm), -1.0, 1.0))
-                else:
-                    cos_sim = 1.0  # 如果速度过小，视为对齐良好（避免噪声导致拒绝）
-                yaw_err = float(np.arctan2(np.sin(parameters[i].psi - leader_yaw), np.cos(parameters[i].psi - leader_yaw)))
-                cos_list.append(cos_sim)
-                yaw_err_list.append(abs(yaw_err))
-            # 聚合为单个样本：最小cos与最大yaw_err（保守判据）
-            if cos_list and yaw_err_list:
-                self._align_samples.append((min(cos_list), max(yaw_err_list)))
-            # 修剪到窗口长度
-            window_len = int(max(1, round(self.align_window / max(1e-3, dt))))
-            if len(self._align_samples) > window_len:
-                self._align_samples = self._align_samples[-window_len:]
-        except Exception:
-            pass
-
-        # --- Handle temporary position_gain hold/restore requested via API ---
-        # If a temp hold is active and we're NOT in blending, perform a time-based
-        # linear restore of the saved gains. Blending has its own gain restore logic
-        # and should take precedence.
-        if getattr(self, '_temp_hold_remaining', 0.0) > 0.0 and self.switch_state != 'blending':
-            try:
-                # decrease remaining time
-                self._temp_hold_remaining = max(0.0, self._temp_hold_remaining - dt)
-                if (self._temp_saved_position_gains is not None) and (self._temp_hold_total > 0.0):
-                    alpha = 1.0 - (self._temp_hold_remaining / self._temp_hold_total)
-                    # apply linear interpolation from 0 -> saved_gain
-                    for vc, g in zip(self._velocity_controllers, self._temp_saved_position_gains):
-                        vc.position_gain = g * alpha
-                if self._temp_hold_remaining <= 0.0:
-                    # restore final gains and clear temp state
-                    if self._temp_saved_position_gains is not None:
-                        for vc, g in zip(self._velocity_controllers, self._temp_saved_position_gains):
-                            vc.position_gain = g
-                    self._temp_saved_position_gains = None
-                    self._temp_hold_total = 0.0
-            except Exception:
-                pass
-
-        # --- 如果收到开启编队请求，且当前处于空闲或arming状态，则准备进入靠近/混合流程 ---
-        if self.enable_requested and self.switch_state in ('idle', 'arming'):
-            # 不再在过渡期间暂停领航机：保持 leader 的 dposd 不被覆盖或置零，以避免改变外部期望
-
-            # 如果门条件满足直接进入 blending，否则进入 rendezvous（靠近）
-            if self._check_gate(parameters):
-                # begin blending
-                self.switch_state = 'blending'
-                self._last_state_change_time = self._time_accum
-                self.blend_elapsed = 0.0
-                # 保存原始 gains（以便线性恢复）和当前 velocities 作为起点
-                self.saved_position_gains = [vc.position_gain for vc in self._velocity_controllers]
-                self.old_dposds = [p.dposd.copy() for p in parameters]
-                # 保存当前偏航作为渐入起点
-                try:
-                    self.old_psids = [p.psid for p in parameters]
-                except Exception:
-                    pass
-                # 将 controllers 的 _qd_prev 对齐为 old_dposds 并置零 gains（避免瞬态）
-                for idx, vc in enumerate(self._velocity_controllers):
-                    try:
-                        vc._qd_prev = self.old_dposds[idx].copy()
-                        for pid in vc._pid_controllers:
-                            pid.reset()
-                    except Exception:
-                        pass
-                    vc.position_gain = 0.0
-            else:
-                # 进入靠近阶段
-                self.switch_state = 'rendezvous'
-                self.rendezvous_timer = 0.0
-                self._last_state_change_time = self._time_accum
-                # 动态计算 rendezvous_duration
-                self.rendezvous_duration = self._compute_rendezvous_duration(parameters)
-                # 将偏航渐入窗口设置为靠近时长（与靠近时间一致）并重置计时器
-                try:
-                    self.rendezvous_yaw_smooth_window = float(self.rendezvous_duration)
-                except Exception:
-                    pass
-                self._rendezvous_yaw_elapsed = 0.0
-                # 保存原始 gains（仅第一次设置），并将所有 controllers 的 gains 置零以避免位置增益在靠近时引起突发扭矩
-                if self.saved_position_gains is None:
-                    self.saved_position_gains = [vc.position_gain for vc in self._velocity_controllers]
-                for vc in self._velocity_controllers:
-                    vc.position_gain = 0.0
-                # 对所有 controllers 同步 _qd_prev 为当前各自参数 dposd（或 leader 的零速度），并 reset pid
-                for idx, vc in enumerate(self._velocity_controllers):
-                    try:
-                        # 直接使用对应参数当前的 dposd 作为基准，移除对已保存领航机速度的依赖
-                        base = parameters[idx].dposd
-                        vc._qd_prev = base.copy()
-                        for pid in vc._pid_controllers:
-                            pid.reset()
-                    except Exception:
-                        pass
-                # 保存当前偏航作为渐入起点
-                try:
-                    self.old_psids = [p.psid for p in parameters]
-                except Exception:
-                    pass
-
-        # --- Rendezvous: 恒定速度靠近到期望编队位置 ---
-        if self.switch_state == 'rendezvous':
-            try:
-                deltas = formation.cal_deltas(parameters[0].psi)
-                leader_pos = parameters[0].pos
-                all_within = True
-                # 对每架 follower 生成恒定速度靠近指令，并同步 controllers
-                for i in range(1, self._count):
-                    # deltas[0][:, i] 是领航机到第 i 架的期望相对位置偏移（向量）
-                    target_pos = leader_pos + deltas[0][:, i]
-                    cur_pos = parameters[i].pos
-                    vec = target_pos - cur_pos
-                    dist = np.linalg.norm(vec)
-                    if dist > self.rendezvous_tol:
-                        all_within = False
-                    # 目标速度为方向 * rendezvous_speed
-                    if dist == 0:
-                        desired_vel = np.zeros(3)
-                    else:
-                        # 三维靠近：包含 z 分量的方向向量
-                        desired_vel = (vec / dist) * self.rendezvous_speed
-                        # 可选：限制竖直速度幅度，避免 z 方向过快
-                        try:
-                            max_vz = getattr(self, 'rendezvous_vz_max', None)
-                            if (max_vz is not None) and (max_vz > 0):
-                                desired_vel[2] = np.clip(desired_vel[2], -max_vz, max_vz)
-                        except Exception:
-                            pass
-                    parameters[i].dposd = desired_vel
-                    # 同步控制器状态，防止速度跳变导致的 dqd 突变
-                    try:
-                        vc = self._velocity_controllers[i]
-                        vc._qd_prev = desired_vel.copy()
-                        for pid in vc._pid_controllers:
-                            pid.reset()
-                        vc.position_gain = 0.0
-                    except Exception:
-                        pass
-
-                self.rendezvous_timer += dt
-
-                # 当所有到位或超时后尝试进入 blending（但尊重最小驻留时间与 blend_start_tol）
-                if all_within or (self.rendezvous_timer >= self.rendezvous_duration):
-                    since = self._time_accum - self._last_state_change_time if self._last_state_change_time is not None else None
-                    if (since is not None) and (since < self.rendezvous_min_time):
-                        # 在最小驻留时间内，不立即开始 blending
-                        return
-                    # 计算最大位置误差以决定是否开始 blending
-                    deltas_chk = formation.cal_deltas(parameters[0].psi)
-                    max_err_chk = 0.0
-                    for j in range(self._count):
-                        # 对第 j 架而言，期望的相对位置是 deltas_chk[0][:, j]
-                        desired_rel_j = deltas_chk[0][:, j]
-                        rel_pos_j = parameters[j].pos - parameters[0].pos
-                        err_j = np.linalg.norm(desired_rel_j - rel_pos_j)
-                        if err_j > max_err_chk:
-                            max_err_chk = err_j
-                    if max_err_chk > getattr(self, 'blend_start_tol', self.activation_tol * 2):
-                        # 误差仍然较大，延长 rendezvous
-                        self.rendezvous_timer = 0.0
-                        return
-                    # 否则开始 blending
-                    self.switch_state = 'blending'
-                    self._last_state_change_time = self._time_accum
-                    self.blend_elapsed = 0.0
-                    self.old_dposds = [p.dposd.copy() for p in parameters]
-                    # 保存当前偏航作为渐入起点
-                    try:
-                        self.old_psids = [p.psid for p in parameters]
-                    except Exception:
-                        pass
-                    # 对 controllers 同步 _qd_prev
-                    for idx, vc in enumerate(self._velocity_controllers):
-                        try:
-                            vc._qd_prev = self.old_dposds[idx].copy()
-                            for pid in vc._pid_controllers:
-                                pid.reset()
-                        except Exception:
-                            pass
-                    # position_gains 已在靠近阶段被置为 0， blending 时线性恢复
-            except Exception:
-                # 出现意外则回到 arming
-                self.switch_state = 'arming'
-                return
-
-        # --- Blending: 从 old_dposds 平滑过渡到当前 leader 的速度 ---
-        if self.switch_state == 'blending':
-            self.blend_elapsed += dt
-            alpha = min(1.0, self.blend_elapsed / max(1e-6, self.blend_duration))
-            # leader 目前保持暂停（parameters[0].dposd 应为 0），混合目标以 leader 当前速度为准
-            leader_dposd = parameters[0].dposd
-            for i in range(self._count):
-                parameters[i].dposd = (1.0 - alpha) * self.old_dposds[i] + alpha * leader_dposd
-            # 线性恢复 position_gain
-            if self.saved_position_gains is not None:
-                for vc, g in zip(self._velocity_controllers, self.saved_position_gains):
-                    vc.position_gain = g * alpha
-
-            # blending 完成后，检测位置误差与A优化的对齐判据决定是否进入 active
-            if alpha >= 1.0:
-                try:
-                    deltas = formation.cal_deltas(parameters[0].psi)
-                    max_err = 0.0
-                    for i in range(self._count):
-                        desired_rel_i = deltas[0][:, i]
-                        rel_pos = parameters[i].pos - parameters[0].pos
-                        err = np.linalg.norm(desired_rel_i - rel_pos)
-                        if err > max_err:
-                            max_err = err
-                except Exception:
-                    max_err = float('inf')
-                # A优化：检查速度方向与偏航在滑动窗口内是否对齐充足
-                align_ok = True
-                try:
-                    if self._align_samples:
-                        # 使用窗口内的最小cos与最大yaw_err作为保守度量
-                        min_cos = min(s[0] for s in self._align_samples)
-                        max_yaw = max(s[1] for s in self._align_samples)
-                        align_ok = (min_cos >= self.align_cos_thresh) and (max_yaw <= self.align_yaw_thresh_rad)
-                except Exception:
-                    align_ok = True
-
-                if (max_err > getattr(self, 'activation_tol', self.rendezvous_tol)) or (not align_ok):
-                    # abort blending，回到 rendezvous
-                    self.switch_state = 'rendezvous'
-                    self.rendezvous_timer = 0.0
-                    self._last_state_change_time = self._time_accum
-                    # 将当前 velocities 作为新的 old_dposds 起点，并同步 controllers
-                    self.old_dposds = [p.dposd.copy() for p in parameters]
-                    for idx, vc in enumerate(self._velocity_controllers):
-                        try:
-                            vc._qd_prev = self.old_dposds[idx].copy()
-                            for pid in vc._pid_controllers:
-                                pid.reset()
-                        except Exception:
-                            pass
-                        vc.position_gain = 0.0
-                    return
-                else:
-                    # 激活：恢复领航机原始期望速度并让所有无人机以该速度跟随；同时重置姿态 PID，降低瞬态
-                    self.switch_state = 'active'
-                    self._last_state_change_time = self._time_accum
-                    self.use_formation = True
-                    self.enable_requested = False
-                    # 启动 active 增益二次平滑计时器
-                    self._active_gain_elapsed = 0.0
-                    # 启动 B优化误差权重渐入计时器
-                    self._active_error_elapsed = 0.0
-                    # 不再恢复任何被暂存的领航机速度（因为我们不再在过渡期间暂停领航机）
-                    # 将最终目标速度设置为领航机的速度，并同步 controllers
-                    try:
-                        final_leader = parameters[0].dposd
-                        for i in range(self._count):
-                            parameters[i].dposd = final_leader.copy()
-                            try:
-                                vc = self._velocity_controllers[i]
-                                vc._qd_prev = final_leader.copy()
-                                for pid in vc._pid_controllers:
-                                    pid.reset()
-                                # 姿态控制器 PID 重置，避免积分残留
-                                oc = self._orientation_controllers[i]
-                                for pid in getattr(oc, '_pid_controllers', []):
-                                    try:
-                                        pid.reset()
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    # 完成激活
-
-        # --- Active 增益二次平滑：在切换后短窗内对 position_gain 再做线性渐入 ---
-        if self.switch_state == 'active' and self.active_gain_smooth_window and self.active_gain_smooth_window > 0.0:
-            try:
-                self._active_gain_elapsed = min(self.active_gain_smooth_window, self._active_gain_elapsed + dt)
-                beta = self._active_gain_elapsed / self.active_gain_smooth_window  # 0..1
-                if self.saved_position_gains is not None:
-                    for vc, g in zip(self._velocity_controllers, self.saved_position_gains):
-                        vc.position_gain = g * beta
-            except Exception:
-                pass
-        # B优化：active阶段误差权重渐入计时推进
-        if self.switch_state == 'active' and self.active_error_smooth_window and self.active_error_smooth_window > 0.0:
-            try:
-                self._active_error_elapsed = min(self.active_error_smooth_window, self._active_error_elapsed + dt)
-            except Exception:
-                pass
-        # rendezvous阶段偏航渐入计时推进
-        if self.switch_state == 'rendezvous' and self.rendezvous_yaw_smooth_window and self.rendezvous_yaw_smooth_window > 0.0:
-            try:
-                self._rendezvous_yaw_elapsed = min(self.rendezvous_yaw_smooth_window, self._rendezvous_yaw_elapsed + dt)
-            except Exception:
-                pass
+        self.switch_state = 'blending' if self.blend_duration > 0 else 'active'
+        self.blend_elapsed = 0.0
+        self._blend_from_dposd = None
+        self._blend_from_psid = None
+        self._cmd_prev_dposd = None
+        self._cmd_prev_psid = None
+        self._join_coeffs = None
+        self._yaw_blend_elapsed = 0.0
+        self._suppress_dqd_remaining = max(0.0, float(self.suppress_dqd_seconds))
