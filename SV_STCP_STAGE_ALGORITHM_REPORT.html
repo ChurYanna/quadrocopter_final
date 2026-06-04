@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>SV-STCP 多模态语义验证时空协同通行算法阶段性报告</title>
+  <style>
+    body { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "SimSun", sans-serif; line-height: 1.55; color: #202124; }
+    h1 { text-align: center; font-size: 24pt; margin: 24px 0 8px; }
+    h2 { font-size: 16pt; margin-top: 26px; border-bottom: 1px solid #777; padding-bottom: 4px; }
+    h3 { font-size: 13pt; margin-top: 18px; }
+    p { margin: 8px 0; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0 14px; }
+    th, td { border: 1px solid #888; padding: 6px 8px; vertical-align: top; }
+    th { background: #f1f3f4; font-weight: bold; }
+    .meta { text-align: center; color: #555; margin-bottom: 24px; }
+    .box { border: 1px solid #999; background: #f8f9fa; padding: 10px 12px; margin: 10px 0; }
+    .prompt { border-left: 4px solid #1a73e8; background: #f3f7ff; padding: 10px 12px; margin: 8px 0 14px; font-size: 10.5pt; }
+    .eq { font-family: "Times New Roman", serif; text-align: center; margin: 8px 0; }
+    .small { font-size: 10pt; color: #444; }
+    ul { margin-top: 5px; }
+  </style>
+</head>
+<body>
+<h1>SV-STCP 多模态语义验证时空协同通行算法阶段性报告</h1>
+<div class="meta">阶段版本：复杂混合障碍在线 VLM 闭环 Demo 版<br>报告范围：只讨论算法结构、关键机制、设计取舍与阶段性创新点</div>
+
+<h2>1. 算法核心定义</h2>
+<p>当前算法可概括为：面向多无人机编队在动态窄洞与实体混合障碍区中的安全通行任务，构建“传感器融合结构化上下文（SFSC）+ 前视 RGB + VLM 高层策略 + 确定性安全验证 + 底层稳定执行”的分层闭环框架。</p>
+<p>算法不把 VLM 放入底层控制回路，也不让 VLM 直接输出速度、推力或轨迹。VLM 只负责高层路线族和局部 PassagePlan 候选；是否可以执行、何时执行、怎样转换成连续控制，由确定性模块裁决。</p>
+
+<div class="box">
+  <b>一句话算法主线：</b>SFSC 给出几何、队形、时序和安全约束，前视 RGB 给出真实视觉形态证据，VLM 在二者融合基础上提出高层策略候选，候选经安全验证、返回时效性门控和安全投影后，才进入按障碍缓存的底层执行计划。
+</div>
+
+<h2>2. 总体分层框架</h2>
+<table>
+  <tr><th>层级</th><th>输入</th><th>输出</th><th>职责边界</th></tr>
+  <tr><td>传感器融合上下文层</td><td>非视觉传感器、队形状态、障碍几何估计、运动模型、有限视野信息</td><td>SFSC 结构化上下文</td><td>把原始状态整理成可规划、可解释、可验证的语义约束</td></tr>
+  <tr><td>视觉证据层</td><td>当前最前方无人机前视 RGB</td><td>障碍外观、遮挡、孔洞/实体形态证据</td><td>保留真实视觉形态，补充 SFSC 难以表达的外观细节</td></tr>
+  <tr><td>确定性基准层</td><td>SFSC、队形宽度、单机安全半径、任务偏好</td><td>可执行 fallback PassagePlan</td><td>任何时刻提供保底策略，保证控制连续性</td></tr>
+  <tr><td>VLM 高层策略层</td><td>前视 RGB + SFSC + 确定性参考策略 + 路线决策摘要</td><td>高层 PassagePlan 候选</td><td>决定穿越、侧绕、越顶、下穿、窗口调整等策略级选择</td></tr>
+  <tr><td>安全验证层</td><td>VLM 候选 PassagePlan</td><td>通过、拒绝或修复后的候选</td><td>检查字段、时序、几何、模式和路线族可执行性</td></tr>
+  <tr><td>时效性门控层</td><td>候选返回时刻、无人机位置速度、障碍 observe_x</td><td>是否准入执行</td><td>防止 VLM 对“已经太近”的障碍进行过期改写</td></tr>
+  <tr><td>底层执行层</td><td>通过验证和准入的 per-obstacle 策略缓存</td><td>连续速度目标和阶段切换</td><td>完成蛇形时序穿越、实体绕行、越顶/下穿、恢复编队</td></tr>
+</table>
+
+<div class="prompt">
+  <b>图 1 生成提示词：</b>绘制一个学术风格算法总框架图，标题为“SV-STCP Multimodal Semantic-Validated Spatio-Temporal Cooperative Passage”。图中从左到右依次为：Sensor-Fused Structured Context、Front RGB Evidence、Deterministic Fallback Planner、VLM High-Level Candidate、Strategy Validator、Timeliness Gate、Safety Projection、Online Strategy Buffer、Low-Level Multi-UAV Executor。用箭头连接，标明 VLM 不直接进入控制，控制闭环由验证后策略缓存驱动。风格简洁、蓝灰配色、适合论文方法章节。
+</div>
+
+<h2>3. 为什么采用“SFSC + 前视 RGB”作为 VLM 输入</h2>
+<h3>3.1 只给视觉原图的问题</h3>
+<p>仅使用前视 RGB，会让 VLM 依赖单视角图像判断距离、尺寸、队形宽度和无人机动力学约束。对于窄洞、动态门、实体厚度、底部净空等任务，单张图像很难稳定提供可执行策略所需的精确数值。视觉模型可能看出“有一个障碍”，但未必能稳定知道“洞口宽度是否大于单机安全直径”“底部净空是否够无人机下穿”“当前队形是否需要蛇形时序”。</p>
+
+<h3>3.2 只给结构化 SFSC 的问题</h3>
+<p>仅使用 SFSC 虽然几何明确，但会丢失真实视觉形态：例如遮挡、局部开口是否被杂物挡住、悬空障碍底部是否在图像中可见、动态障碍外观是否和传感器估计一致等。对于复杂场景，视觉证据是判断“结构化估计是否可信”的关键。</p>
+
+<h3>3.3 最终选择：非视觉结构化约束 + 视觉原图证据</h3>
+<p>因此最终选择不是把 SFSC 画成图再给 VLM，也不是让 VLM 单独看图，而是同时输入：</p>
+<ul>
+  <li><b>SFSC：</b>提供距离、尺寸、队形、速度、时序、安全半径、底部净空、顶部目标高度、路线可行性等精确约束。</li>
+  <li><b>前视 RGB：</b>提供真实外观、遮挡关系、局部通道形态、视觉异常和 SFSC 一致性证据。</li>
+</ul>
+<p>这种设计解决的根本问题是：VLM 擅长语义和形态理解，但不擅长稳定承担数值约束；确定性传感器融合擅长约束表达，但不擅长复杂视觉形态判断。两者互补后，VLM 的任务从“凭图猜控制”变成“在明确物理约束下做高层策略选择”。</p>
+
+<h3>3.4 当前输入端进一步强化：路线决策摘要</h3>
+<p>在复杂实体障碍中，VLM 容易把“垂直通行”误理解成“顶部越障”，或者在明显可下穿时仍选择侧绕。为此当前输入端增加了实体障碍路线决策摘要。该摘要将关键路线变量从大段 SFSC 中提取出来，包括底部净空、是否可下穿、预计下穿高度、所需越顶高度、上下两条路线的 Z 轴代价、推荐垂直路线和确定性兜底策略。</p>
+
+<table>
+  <tr><th>字段</th><th>含义</th><th>设计目的</th></tr>
+  <tr><td>bottom_clearance_z</td><td>实体底部离地高度</td><td>判断底部是否真的悬空</td></tr>
+  <tr><td>underpass_feasible</td><td>底部净空是否满足无人机半径和安全余量</td><td>防止无悬空实体被误判为可下穿</td></tr>
+  <tr><td>estimated_underpass_target_z</td><td>下穿目标高度</td><td>让 VLM 比较下穿路线代价</td></tr>
+  <tr><td>required_overpass_z</td><td>越顶所需高度</td><td>防止高障碍被错误建议越顶</td></tr>
+  <tr><td>preferred_vertical_route</td><td>在上下均可行时推荐更短的垂直路线</td><td>解决“明明下穿更短却越顶”的问题</td></tr>
+</table>
+
+<div class="prompt">
+  <b>图 2 生成提示词：</b>绘制“多模态输入设计”示意图。左侧为非视觉传感器融合，包括 odometry、range sensing、inter-UAV communication、controller state、obstacle geometry estimates，汇聚为 SFSC；右侧为 frontmost UAV RGB image；两者共同输入 VLM。图中突出 SFSC 提供 quantitative constraints，RGB 提供 visual morphology evidence。底部显示 VLM 输出 high-level route family，不输出 low-level motor command。
+</div>
+
+<h2>4. 障碍语义抽象与可通行性判断</h2>
+<p>算法将障碍按功能抽象为两类：穿越型障碍和实体型障碍。穿越型障碍关注孔洞宽度、通过高度和动态中心预测；实体型障碍关注尺寸、厚度、侧绕空间、顶部高度、底部净空和运动状态。</p>
+
+<h3>4.1 穿越型障碍</h3>
+<p>穿越型障碍的基本判断是队形宽度与洞口宽度比较。若完整队形可过，则理论上可保持编队；若完整队形不可过但单机可过，则采用蛇形时序穿越；若单机也不可过，则需要绕行或等待。当前复杂 demo 中，为避免障碍区内“formation”误用，障碍区内不把保持编队作为通行策略，编队恢复仅发生在全体无人机清过障碍区之后。</p>
+
+<div class="eq">formation_width = max(y_i) - min(y_i) + 2r_uav</div>
+<div class="eq">single_file_width = 2r_uav</div>
+
+<h3>4.2 实体型障碍</h3>
+<p>实体障碍不适合用“穿洞”逻辑处理。当前算法把实体通行策略拆成路线族：左侧绕、右侧绕、按队形分流绕、顶部越障、底部下穿，以及在安全范围内由底层按代价自适应选择。实体障碍的策略选择必须满足几何约束：无底部净空不能下穿，顶部目标过高不能越顶，侧绕必须考虑横向安全余量和障碍厚度。</p>
+
+<h3>4.3 路线族设计的意义</h3>
+<p>早期只使用“edge_bypass”会导致 VLM 即使参与，也只能微调 observe_x 和 clear_x，难以体现策略价值。将实体绕障拆分为路线族后，VLM 可以在高层选择“从左侧绕、从右侧绕、越顶、下穿或分流”，底层再根据无人机位置和安全余量生成连续目标。这使 VLM 的贡献从数值微调提升为可观察的策略级改写。</p>
+
+<h2>5. 确定性基准策略与 VLM 候选策略</h2>
+<h3>5.1 为什么必须有确定性兜底</h3>
+<p>VLM 在线推理存在延迟、网络失败、格式错误和理解偏差。多无人机控制不能等待模型返回，也不能让未经验证的模型输出直接改写控制。因此系统先生成确定性基准策略，并立即进入控制缓存。VLM 返回前，底层执行始终连续；VLM 返回后，仅作为候选进入验证和准入流程。</p>
+
+<h3>5.2 确定性策略的作用不是替代 VLM</h3>
+<p>确定性策略提供一个物理可行的下界。VLM 的作用是在这个下界上进行局部策略增强，例如：</p>
+<ul>
+  <li>将实体障碍从通用边缘绕行改为右侧绕、左侧绕、越顶或下穿；</li>
+  <li>对动态孔洞延长清障窗口，降低尾机擦碰风险；</li>
+  <li>在视觉证据显示局部通道异常时提前观察或延后释放；</li>
+  <li>在 VLM 不确定时确认兜底策略，形成闭环复核证据。</li>
+</ul>
+
+<h3>5.3 PassagePlan 作为统一策略接口</h3>
+<p>VLM 输出必须是可验证的高层策略计划，而不是自然语言建议。计划中包含整体模式、无人机通过顺序、时间槽、每个障碍的局部模式、路线族、观察点和释放点。这样做的原因是：自然语言解释无法直接被控制系统验证；结构化计划可以被检查、比较、投影和缓存。</p>
+
+<h2>6. 异步在线重规划与返回时效性门控</h2>
+<h3>6.1 异步机制</h3>
+<p>在线 VLM 调用通常需要数秒。若控制循环等待模型返回，无人机将失去连续控制。因此当前算法采用异步机制：检测到待规划障碍后，确定性兜底立即进入缓存，同时后台提交 VLM 请求，控制循环继续运行。</p>
+
+<h3>6.2 为什么引入 Timeliness Gate</h3>
+<p>即使 VLM 返回的策略格式正确，也可能已经过期。例如模型基于 7 秒前的图像判断当前障碍，但无人机已经接近或进入执行窗口。此时若强行改写策略，会造成临近障碍突然变道、队列时序破坏或擦碰风险。因此算法加入返回时效性验证。</p>
+
+<div class="eq">remaining_x = deadline_x - x_front</div>
+<div class="eq">TTC = remaining_x / max(v_front, v_min)</div>
+<p>只有当剩余距离和 TTC 同时超过阈值，VLM 候选才允许进入安全投影；否则仅作为认知证据记录，不进入底层执行。</p>
+
+<h3>6.3 时效性门控解决的根本问题</h3>
+<p>它解决的是“低频语义模型与高频飞控之间的时间尺度不匹配”。VLM 可以慢，但慢返回的结果不能强行介入近场控制。该机制使大模型参与在线规划，同时不破坏控制安全边界。</p>
+
+<div class="prompt">
+  <b>图 3 生成提示词：</b>绘制“异步 VLM 在线重规划与时效性门控”流程图。包含 fallback accepted immediately、async VLM request、candidate returned、StrategyValidator、Timeliness Gate with remaining_x and TTC、Safety Projection、Online Strategy Buffer。用红色箭头表示 stale candidate 被拒绝，仅进入 evidence chain；绿色箭头表示 fresh candidate 进入执行缓存。
+</div>
+
+<h2>7. 安全验证与安全投影</h2>
+<h3>7.1 安全验证</h3>
+<p>安全验证器检查候选策略的结构完整性、无人机编号合法性、时间槽单调性、障碍覆盖关系、模式与障碍类型匹配、观察点和释放点的几何顺序、实体路线族的可执行性等。特别地，当前阶段已加入对实体路线的几何约束：没有明确底部净空不能下穿，顶部目标过高不能越顶。</p>
+
+<h3>7.2 安全投影</h3>
+<p>通过验证的候选仍会经过安全投影。投影层的目标不是让 VLM 失去作用，而是将 VLM 候选限制在底层稳定执行器能接受的范围内。例如保留全局通过顺序和时间槽、禁止 observe_x 晚于底层策略、禁止 clear_x 短于底层策略、过滤过小窗口噪声、限制清障窗口延长上限等。</p>
+
+<h3>7.3 VLM 与确定性安全边界的关系</h3>
+<p>本算法的学术边界是：VLM 提供候选智能，确定性模块提供安全责任。这样可以避免“模型直接控制无人机”的不可验证风险，同时保留 VLM 对复杂语义和路线族选择的贡献。</p>
+
+<h2>8. 底层执行策略</h2>
+<h3>8.1 蛇形时序穿越</h3>
+<p>对于窄洞类障碍，多无人机采用蛇形时序穿越。核心不是简单排队，而是将每架无人机分配到时空槽，并通过 x 方向速度限制避免后机追上前机。通过顺序可以根据后续障碍和无人机实际位置局部更新，但不会在障碍区内强行恢复完整编队。</p>
+
+<h3>8.2 动态孔洞预测对齐</h3>
+<p>动态孔洞中心随时间变化，因此无人机对齐的不是当前洞口中心，而是预计到达时刻的洞口中心。接近障碍时，横向目标和高度目标逐渐从原队形位置过渡到预测洞口中心与安全通过高度。满足对齐条件后，x 方向快速通过，避免在门体内部反复修正。</p>
+
+<h3>8.3 实体障碍执行</h3>
+<p>实体障碍执行按路线族生成目标。侧绕目标由障碍横向宽度和安全边界确定，越顶目标由障碍顶部高度和垂直安全余量确定，下穿目标由底部净空和无人机半径确定。清障条件考虑实体厚度，避免无人机刚越过中心就过早切换到下一个障碍。</p>
+
+<h3>8.4 按无人机个体切换障碍策略</h3>
+<p>复杂混合场景中，前方无人机可能已经开始处理下一个障碍，而后方无人机仍在处理当前障碍。因此底层不采用“全队统一切换当前障碍”的方式，而是每架无人机根据自身 x 位置、清障状态和当前锁定障碍选择对应策略。这一点显著提高了混合障碍场景下的连续性。</p>
+
+<h2>9. 证据链面板与可解释性</h2>
+<p>证据链面板不是装饰，而是算法可解释性的一部分。它需要回答三个核心问题：原本确定性兜底是什么，VLM 是否起作用，如果起作用具体改变了什么。当前面板围绕“兜底策略、VLM 候选、实际进入底层执行、详细证据链”组织，使观看者不需要阅读日志或源码即可判断 VLM 的真实贡献。</p>
+
+<table>
+  <tr><th>面板模块</th><th>回答的问题</th></tr>
+  <tr><td>兜底策略 / 当前执行</td><td>当前障碍原本按什么确定性策略执行；每架无人机当前处于什么通行状态</td></tr>
+  <tr><td>VLM 是否起作用</td><td>VLM 是否改变兜底；核心策略改写是否为路线族改变</td></tr>
+  <tr><td>实际进入底层的改动</td><td>候选是否通过验证、TTC 是否有效、最终是否写入执行缓存</td></tr>
+  <tr><td>详细记录 / 证据链</td><td>保留视觉帧、SFSC 感知窗口、候选返回和任务指标</td></tr>
+</table>
+
+<div class="prompt">
+  <b>图 4 生成提示词：</b>绘制一个四象限可解释面板示意图。左上为 Deterministic Fallback and Current UAV State，右上为 VLM Contribution Summary，左下为 Admission and Actual Execution Change，右下为 Evidence Timeline。每个象限写 2-3 条示例信息，如 fallback edge_bypass、VLM policy edge_bypass to underpass、TTC passed、actual route updated。
+</div>
+
+<h2>10. 阶段性核心创新点</h2>
+<h3>10.1 SFSC + RGB 的互补式多模态策略输入</h3>
+<p>创新点不在于简单把图像和文本拼接给 VLM，而在于明确划分两类证据的职责：SFSC 提供可验证数值约束，RGB 提供真实形态证据。该设计避免 VLM 仅凭图像估计几何，也避免结构化上下文丢失视觉异常。</p>
+
+<h3>10.2 VLM 作为高层策略候选生成器，而非控制器</h3>
+<p>算法把 VLM 限定在高层策略层，输出路线族和 PassagePlan 候选，而不是底层速度或姿态指令。这使大模型能力可以进入机器人决策，同时安全责任仍由确定性验证和执行层承担。</p>
+
+<h3>10.3 确定性 fallback 与异步 VLM 的控制连续性设计</h3>
+<p>VLM 延迟不可避免。确定性 fallback 立即进入缓存，异步 VLM 后台计算，避免控制循环等待模型。该机制解决了大模型低频推理与无人机高频控制之间的基本矛盾。</p>
+
+<h3>10.4 Timeliness Gate</h3>
+<p>返回时效性门控是本阶段非常关键的安全机制。它不是简单判断模型是否返回，而是判断返回时是否仍有足够空间和时间执行候选。该机制使“过期但格式正确”的 VLM 策略不会进入控制。</p>
+
+<h3>10.5 面向混合障碍的 per-obstacle 策略缓存</h3>
+<p>策略不再是全局一次性命令，而是按障碍缓存、按无人机位置独立取用。这解决了多无人机在混合障碍中“前机进入下一障碍、后机仍在上一障碍”的异步执行问题。</p>
+
+<h3>10.6 实体路线族拆分</h3>
+<p>将实体绕障从单一 edge_bypass 拆成左绕、右绕、分流、越顶、下穿等路线族，使 VLM 的策略贡献可以体现在“路线选择”而不只是 observe_x / clear_x 微调上。这是复杂 demo 中 VLM 作用可见化的关键。</p>
+
+<h3>10.7 路线可行性显式输入与验证</h3>
+<p>对实体障碍，算法显式计算底部净空、越顶高度、上下路线 Z 轴代价和推荐垂直路线，并在验证器中加入硬约束。该设计解决了 VLM 可能误判“无底部空间也下穿”或“高障碍也越顶”的问题。</p>
+
+<h2>11. 当前阶段已经完成的闭环能力</h2>
+<ul>
+  <li>动态窄洞的蛇形时序穿越。</li>
+  <li>多无人机按时间槽协同通过窄洞。</li>
+  <li>实体障碍的侧绕、越顶、下穿路线族表达。</li>
+  <li>有限视野在线感知与异步 VLM 请求。</li>
+  <li>确定性 fallback 与 VLM 候选并行存在。</li>
+  <li>VLM 候选经过格式验证、几何验证、时效性门控和安全投影。</li>
+  <li>按障碍缓存的在线策略执行。</li>
+  <li>可解释面板展示兜底策略、VLM 改写和实际执行结果。</li>
+</ul>
+
+<h2>12. 阶段性不足与后续实验建议</h2>
+<p>当前 demo 已经形成完整算法闭环，但仍有若干研究型问题适合后续实验，而不应继续无边界调参。</p>
+<ul>
+  <li><b>VLM 对局部视觉形态的稳定性：</b>同一个悬空障碍，模型可能受视角影响选择侧绕而非下穿。后续应通过视角、光照、遮挡和 SFSC 摘要消融分析模型依赖。</li>
+  <li><b>路线族消融：</b>分别关闭 VLM、关闭路线族拆分、关闭 Timeliness Gate，比较通过率、碰撞率、平均耗时和策略改写次数。</li>
+  <li><b>复杂场景扩展：</b>逐步增加实体障碍种类，而不是一次性堆叠过多障碍。重点观察 VLM 是否产生真实策略级贡献。</li>
+  <li><b>实时性实验：</b>比较不同 VLM 模型延迟，分析提前感知距离、飞行速度和 TTC 门槛之间的关系。</li>
+</ul>
+
+<h2>13. 建议图表清单</h2>
+<table>
+  <tr><th>图号</th><th>图名</th><th>用途</th><th>生成提示词要点</th></tr>
+  <tr><td>图 1</td><td>算法总框架图</td><td>展示从 SFSC/RGB 到底层执行的完整闭环</td><td>分层流程、VLM 不直连控制、安全验证与时效门控突出</td></tr>
+  <tr><td>图 2</td><td>SFSC + RGB 输入互补图</td><td>解释为什么采用结构化非视觉信息加原始视觉图像</td><td>左侧非视觉约束，右侧视觉证据，中间 VLM，高层策略输出</td></tr>
+  <tr><td>图 3</td><td>异步在线重规划图</td><td>说明 fallback、异步请求、候选返回、时效门控关系</td><td>绿色通过、红色过期拒绝、控制不中断</td></tr>
+  <tr><td>图 4</td><td>实体路线族选择图</td><td>展示左绕、右绕、越顶、下穿和分流</td><td>一个实体障碍，画出五种候选路线和安全边界</td></tr>
+  <tr><td>图 5</td><td>Timeliness Gate 几何示意图</td><td>说明 remaining_x 与 TTC</td><td>无人机、observe_x、deadline_x、速度箭头、TTC 公式</td></tr>
+  <tr><td>图 6</td><td>证据链面板结构图</td><td>展示算法可解释性</td><td>四象限：兜底、VLM贡献、实际执行、证据时间线</td></tr>
+</table>
+
+<div class="prompt">
+  <b>图 4 生成提示词：</b>绘制“实体障碍路线族选择”三维示意图。画一个长方体实体障碍，周围有五条彩色路线：left bypass、right bypass、split-by-lane bypass、overpass、underpass。标出 UAV radius、安全余量、bottom clearance、required overpass height、clear_x。风格为论文技术插图，白底、细线、带中文标签。
+</div>
+
+<div class="prompt">
+  <b>图 5 生成提示词：</b>绘制 Timeliness Gate 示意图。x 轴为飞行方向，画出当前最前方 UAV 位置、候选障碍 observe_x、deadline_x、剩余距离 remaining_x、速度 v_x 和 TTC=remaining_x/v_x。左侧展示 VLM request time，右侧展示 VLM return time。用红色区域表示候选已过期不能进入执行，用绿色区域表示候选仍可提前介入。
+</div>
+
+<h2>14. 阶段性结论</h2>
+<p>当前算法已经从单纯 demo 调参发展为完整的多模态语义验证时空协同通行框架。其核心不在于“调用了 VLM”，而在于建立了一套可解释、可验证、可异步执行的 VLM 介入机制：VLM 看见视觉证据和 SFSC 约束后提出高层策略；确定性模块保证安全和连续控制；底层执行器按 per-obstacle 缓存实现多无人机混合障碍通行。</p>
+<p>从阶段性成果看，该框架已经具备作为论文第一版完整方法的基础：有明确问题定义、分层架构、输入设计逻辑、策略接口、安全验证、时效性门控、在线执行闭环和可解释展示。后续主要工作应转向系统实验、消融分析和论文方法表达，而不是继续无约束修改底层 demo。</p>
+</body>
+</html>

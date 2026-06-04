@@ -6,7 +6,12 @@ from .structures import FormationState, ObstacleDescriptor, ObstacleField
 
 
 class ObstacleFieldEncoder:
-    """Converts simulator/runtime obstacle data into semantic descriptors."""
+    """Encodes obstacle observations into SFSC descriptors.
+
+    In hardware terms this layer corresponds to fast non-VLM processing over
+    range sensing, odometry and local obstacle estimates.  The MuJoCo demo uses
+    scenario/runtime data to emulate that sensor-fused structured context.
+    """
 
     @staticmethod
     def encode_dynamic_apertures(

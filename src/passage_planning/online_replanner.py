@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from collections.abc import Callable
 from typing import Any
 
 from .llm_context import build_llm_scene_context
@@ -260,6 +261,7 @@ class AsyncOnlineReplanEvent:
     result: OnlineReplanResult | None = None
     fallback_result: OnlineReplanResult | None = None
     latency_s: float | None = None
+    strategy_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -268,6 +270,7 @@ class AsyncOnlineReplanEvent:
             'obstacle_ids': list(self.obstacle_ids),
             'message': self.message,
             'latency_s': self.latency_s,
+            'strategy_source': self.strategy_source,
             'result': None if self.result is None else self.result.to_dict(),
             'fallback_result': None if self.fallback_result is None else self.fallback_result.to_dict(),
         }
@@ -294,9 +297,12 @@ class AsyncOnlineReplanningManager:
         replanner: OnlineReplanner,
         generator: LLMStrategyGenerator | None,
         max_workers: int = 1,
+        multimodal_context_provider: Callable[[], dict[str, Any] | None] | None = None,
     ):
         self.replanner = replanner
         self.generator = generator
+        self.multimodal_context_provider = multimodal_context_provider
+        self.external_source = self._infer_external_source(generator)
         self.executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
         self.pending: dict[tuple[str, ...], _PendingOnlineRequest] = {}
         self.closed = False
@@ -322,6 +328,7 @@ class AsyncOnlineReplanningManager:
                     current_time=float(current_time),
                     obstacle_ids=visible_ids,
                     message=reason,
+                    strategy_source=self.external_source,
                 )
             ]
         if local_ids in self.pending:
@@ -330,8 +337,9 @@ class AsyncOnlineReplanningManager:
                     event_type='pending',
                     current_time=float(current_time),
                     obstacle_ids=local_ids,
-                    message='LLM request already pending; control loop continues with fallback strategy',
+                    message='external strategy request already pending; control loop continues with fallback strategy',
                     fallback_result=self.pending[local_ids].fallback_result,
+                    strategy_source=self.external_source,
                 )
             ]
 
@@ -347,6 +355,7 @@ class AsyncOnlineReplanningManager:
                     else 'deterministic local fallback was rejected'
                 ),
                 fallback_result=fallback_result,
+                strategy_source=self.external_source,
             )
         ]
         if self.generator is None or not fallback_result.accepted:
@@ -371,8 +380,9 @@ class AsyncOnlineReplanningManager:
                 event_type='submitted',
                 current_time=float(current_time),
                 obstacle_ids=local_ids,
-                message='external LLM request submitted asynchronously; viewer/control loop is not blocked',
+                message='external strategy request submitted asynchronously; viewer/control loop is not blocked',
                 fallback_result=fallback_result,
+                strategy_source=self.external_source,
             )
         )
         return events
@@ -405,13 +415,14 @@ class AsyncOnlineReplanningManager:
                     current_time=float(current_time),
                     obstacle_ids=pending.obstacle_ids,
                     message=(
-                        'external LLM strategy accepted and merged into online buffer'
+                        'external strategy candidate validated; execution admission is pending timeliness/projection gate'
                         if result.accepted
-                        else 'external LLM strategy rejected; fallback strategy remains active'
+                        else 'external strategy rejected; fallback strategy remains active'
                     ),
                     result=result,
                     fallback_result=pending.fallback_result,
                     latency_s=latency,
+                    strategy_source=self.external_source,
                 )
             )
             del self.pending[key]
@@ -420,6 +431,19 @@ class AsyncOnlineReplanningManager:
     def close(self) -> None:
         self.closed = True
         self.executor.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def _infer_external_source(generator: LLMStrategyGenerator | None) -> str | None:
+        if generator is None:
+            return None
+        class_name = generator.__class__.__name__.lower()
+        if 'vlm' in class_name:
+            return 'qwen_vlm'
+        if 'qwen' in class_name:
+            return 'qwen'
+        if 'mock' in class_name:
+            return 'mock'
+        return class_name
 
     def _run_external_llm(
         self,
@@ -430,6 +454,10 @@ class AsyncOnlineReplanningManager:
         request_time: float,
     ) -> OnlineReplanResult:
         scene_context = build_llm_scene_context(local_field, self.replanner.formation, self.replanner.mission, deterministic_plan)
+        if self.multimodal_context_provider is not None:
+            multimodal_context = self.multimodal_context_provider()
+            if multimodal_context:
+                scene_context.update(multimodal_context)
         selected_plan, validation, used_fallback = self.replanner.pipeline.generate_or_fallback(
             self.generator,
             scene_context,

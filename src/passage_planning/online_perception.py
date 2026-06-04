@@ -7,7 +7,7 @@ from .structures import ObstacleDescriptor, ObstacleField
 
 @dataclass(frozen=True)
 class OnlinePerceptionConfig:
-    """Finite-view perception settings for online semantic replanning."""
+    """Finite-view perception settings for online SFSC replanning."""
 
     lookahead_distance: float = 14.0
     behind_tolerance: float = 1.0
@@ -60,12 +60,12 @@ class PerceptionWindow:
         return self.visible_obstacles[0]
 
     def visible_field(self, revealed_only: bool = True) -> ObstacleField:
-        """Return a semantic field for the visible window.
+        """Return an SFSC obstacle field for the visible window.
 
         When `revealed_only=True`, obstacles whose detailed geometry is not yet
         within the reveal distance are returned with width/size hidden.  This
         lets the next online replanning layer distinguish coarse detection from
-        actionable semantic planning.
+        actionable SFSC planning.
         """
         obstacles = []
         for perceived in self.visible_obstacles:
@@ -86,7 +86,7 @@ class PerceptionWindow:
 
 
 class OnlineObstaclePerception:
-    """Finite-lookahead semantic perception for online replanning demos.
+    """Finite-lookahead SFSC perception for online replanning demos.
 
     The class models a simple onboard perception assumption: the vehicle can
     detect obstacles inside a forward window, but detailed geometry becomes

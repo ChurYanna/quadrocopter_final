@@ -180,6 +180,14 @@ class DynamicGateSnakeBase(unittest.TestCase):
                 'blend': float(gate_motion['blend']),
                 'omega2': float(gate_motion['omega2']),
                 'phase2': float(gate_motion['phase2']),
+                'center_lookahead_time': float(
+                    gate_motion.get('center_lookahead_time', self.GATE_CENTER_LOOKAHEAD_TIME)
+                ),
+                'max_center_lead_y': (
+                    None
+                    if gate_motion.get('max_center_lead_y') is None
+                    else float(gate_motion.get('max_center_lead_y'))
+                ),
             })
         return gate_specs
 
@@ -202,6 +210,7 @@ class DynamicGateSnakeBase(unittest.TestCase):
             ], dtype=float)
             if len(geom_size) >= 3:
                 model.geom_size[geom_id] = 0.5 * obstacle_size
+            route_policy = str(solid_spec.get('route_policy', 'split_by_lane'))
             solid_specs.append({
                 'prefix': str(solid_spec['prefix']),
                 'id': int(geom_id),
@@ -212,7 +221,9 @@ class DynamicGateSnakeBase(unittest.TestCase):
                 'amplitude': float(solid_spec.get('amplitude', 0.0)),
                 'omega': float(solid_spec.get('omega', 0.0)),
                 'phase': float(solid_spec.get('phase', 0.0)),
-                'route_policy': str(solid_spec.get('route_policy', 'split_by_lane')),
+                'route_policy': route_policy,
+                'default_route_policy': route_policy,
+                'route_policy_source': 'deterministic_config',
                 'speed_x': float(solid_spec.get('speed_x', self.SOLID_BYPASS_SPEED_X)),
                 'align_speed_x': float(solid_spec.get('align_speed_x', self.TEMPORAL_SLOT_WAIT_SPEED_X)),
                 'side_clearance': float(solid_spec.get('side_clearance', self.SOLID_BYPASS_SIDE_CLEARANCE)),
@@ -545,7 +556,8 @@ class DynamicGateSnakeBase(unittest.TestCase):
         return cmd
 
     def _all_cleared_gate(self, positions: list[np.ndarray], gate_spec: dict) -> bool:
-        clear_x = float(gate_spec['x'] + self.GATE_PASS_CLEAR_X)
+        pass_clear_x = float(gate_spec.get('pass_clear_x', self.GATE_PASS_CLEAR_X))
+        clear_x = float(gate_spec['x'] + pass_clear_x)
         return all(float(np.asarray(pos, dtype=float)[0]) >= clear_x for pos in positions)
 
     def _formation_is_stable(self, positions: list[np.ndarray], leader_pos: np.ndarray, formation) -> bool:

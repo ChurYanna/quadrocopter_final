@@ -4,7 +4,7 @@ from .structures import FormationState, MissionPreference, ObstacleDescriptor, O
 
 
 class PassabilityEvaluator:
-    """Deterministic passability reasoning for formation-level passage."""
+    """Deterministic passability reasoning inside the obstacle zone."""
 
     def __init__(self, formation_pass_margin: float = 0.20, single_file_margin: float = 0.16):
         self.formation_pass_margin = float(formation_pass_margin)
@@ -33,34 +33,29 @@ class PassabilityEvaluator:
             )
 
         aperture_width = float(obstacle.aperture_width or 0.0)
-        formation_required_width = formation.width_y + self.formation_pass_margin
         single_file_required_width = formation.single_file_width + self.single_file_margin
 
         if mission.preferred_mode is not None:
+            preferred_mode = 'snake_sequence' if mission.preferred_mode == 'formation' else mission.preferred_mode
             return PassabilityReport(
                 obstacle_id=obstacle.obstacle_id,
-                recommended_mode=mission.preferred_mode,
+                recommended_mode=preferred_mode,
                 confidence=0.75,
-                reasons=(f'mission preferred mode is {mission.preferred_mode}',),
+                reasons=(
+                    f'mission preferred mode is {mission.preferred_mode}',
+                    'formation is reserved for post-obstacle recovery, not obstacle-zone passage',
+                ),
             )
 
-        if aperture_width >= formation_required_width:
-            return PassabilityReport(
-                obstacle_id=obstacle.obstacle_id,
-                recommended_mode='formation',
-                confidence=0.88,
-                reasons=('aperture width is sufficient for current formation',),
-            )
-
-        if mission.allow_disband and aperture_width >= single_file_required_width:
+        if aperture_width >= single_file_required_width:
             confidence = 0.90 if obstacle.risk_level != 'high' else 0.82
             return PassabilityReport(
                 obstacle_id=obstacle.obstacle_id,
                 recommended_mode='snake_sequence',
                 confidence=confidence,
                 reasons=(
-                    'formation width exceeds aperture width',
-                    'single-file passage remains feasible',
+                    'single-file passage is feasible',
+                    'formation recovery is allowed only after clearing the obstacle zone',
                 ),
             )
 

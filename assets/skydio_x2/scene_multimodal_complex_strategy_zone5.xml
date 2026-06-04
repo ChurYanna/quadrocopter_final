@@ -1,4 +1,4 @@
-<mujoco model="Skydio X2 complex dynamic obstacle zone scene">
+<mujoco model="Skydio X2 multimodal complex strategy zone scene">
     <compiler autolimits="true" assetdir="assets"/>
 
     <option timestep="0.01" density="1.225" viscosity="1.8e-5"/>
@@ -36,6 +36,9 @@
         <material name="gate_material_e" rgba="0.62 0.42 0.86 1" specular="0.3" shininess="0.4"/>
         <material name="solid_obstacle_material" rgba="0.55 0.58 0.62 1" specular="0.2" shininess="0.25"/>
         <material name="warning_obstacle_material" rgba="0.92 0.55 0.18 1" specular="0.2" shininess="0.25"/>
+        <material name="cone_material" rgba="0.85 0.28 0.18 1" specular="0.25" shininess="0.3"/>
+        <material name="clutter_material" rgba="0.35 0.36 0.40 1" specular="0.15" shininess="0.2"/>
+        <material name="ring_material" rgba="0.12 0.68 0.74 1" specular="0.25" shininess="0.35"/>
         <mesh class="x2" file="X2_lowpoly.obj"/>
     </asset>
 
@@ -44,45 +47,51 @@
         <light pos="0 0 4" dir="0 0 -1" directional="true"/>
         <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
 
-        <!--
-            复杂动态障碍区 v1：
-            - 五个动态孔洞障碍连续排列，门洞宽度/高度/颜色不同；
-            - 运行时由测试脚本按 prefix 移动 left/right/top 三个 geom；
-            - 通道两侧加入实体干扰物，用于增强障碍区视觉和语义复杂度；
-            - 当前底层执行器仍以孔洞穿越为主，实体障碍先放在主通道外侧。
-        -->
-        <geom name="gate1_left_post" type="box" pos="6.0 -6.66 8.00" size="0.24 6.00 8.00" material="gate_material_a"/>
-        <geom name="gate1_right_post" type="box" pos="6.0 6.66 8.00" size="0.24 6.00 8.00" material="gate_material_a"/>
-        <geom name="gate1_top_beam" type="box" pos="6.0 0.00 8.65" size="0.24 12.66 7.00" material="gate_material_a"/>
-        <geom name="gate1_bottom_beam" type="box" pos="6.0 0.00 0.225" size="0.24 12.66 0.225" material="gate_material_a"/>
+        <!-- Eight SFSC-planned obstacles plus off-route visual clutter. -->
+        <geom name="gate1_left_post" type="box" pos="7.0 -6.68 8.00" size="0.24 6.00 8.00" material="gate_material_a"/>
+        <geom name="gate1_right_post" type="box" pos="7.0 6.68 8.00" size="0.24 6.00 8.00" material="gate_material_a"/>
+        <geom name="gate1_top_beam" type="box" pos="7.0 0.00 8.68" size="0.24 12.68 7.00" material="gate_material_a"/>
+        <geom name="gate1_bottom_beam" type="box" pos="7.0 0.00 0.18" size="0.24 12.68 0.18" material="gate_material_a"/>
+        <geom name="gate1_slant_a" type="box" pos="7.02 -3.25 2.05" size="0.18 2.05 0.12" euler="0 0 0.52" material="warning_obstacle_material"/>
+        <geom name="gate1_slant_b" type="box" pos="7.02 3.25 2.05" size="0.18 2.05 0.12" euler="0 0 -0.52" material="warning_obstacle_material"/>
 
-        <geom name="gate2_left_post" type="box" pos="11.5 -6.58 8.00" size="0.24 6.00 8.00" material="gate_material_b"/>
-        <geom name="gate2_right_post" type="box" pos="11.5 6.58 8.00" size="0.24 6.00 8.00" material="gate_material_b"/>
-        <geom name="gate2_top_beam" type="box" pos="11.5 0.00 11.05" size="0.24 12.58 7.00" material="gate_material_b"/>
-        <geom name="gate2_bottom_beam" type="box" pos="11.5 0.00 1.025" size="0.24 12.58 1.025" material="gate_material_b"/>
+        <geom name="over_beam" type="box" pos="19.0 0.0 1.20" size="1.40 3.90 1.20" material="solid_obstacle_material"/>
+        <geom name="over_beam_top_hint" type="box" pos="19.05 0.0 2.62" size="1.15 4.25 0.10" material="warning_obstacle_material"/>
 
-        <geom name="gate3_left_post" type="box" pos="17.0 -6.74 8.00" size="0.24 6.00 8.00" material="gate_material_c"/>
-        <geom name="gate3_right_post" type="box" pos="17.0 6.74 8.00" size="0.24 6.00 8.00" material="gate_material_c"/>
-        <geom name="gate3_top_beam" type="box" pos="17.0 0.00 8.70" size="0.24 12.74 7.00" material="gate_material_c"/>
-        <geom name="gate3_bottom_beam" type="box" pos="17.0 0.00 0.200" size="0.24 12.74 0.200" material="gate_material_c"/>
+        <geom name="gate2_left_post" type="box" pos="32.0 -7.85 8.00" size="0.24 5.00 8.00" material="ring_material"/>
+        <geom name="gate2_right_post" type="box" pos="32.0 7.85 8.00" size="0.24 5.00 8.00" material="ring_material"/>
+        <geom name="gate2_top_beam" type="box" pos="32.0 0.00 7.90" size="0.24 10.90 6.45" material="ring_material"/>
+        <geom name="gate2_ring_left" type="cylinder" pos="32.03 -3.05 1.95" size="0.16 0.95" euler="1.5708 0 0" material="ring_material"/>
+        <geom name="gate2_ring_right" type="cylinder" pos="32.03 3.05 1.95" size="0.16 0.95" euler="1.5708 0 0" material="ring_material"/>
 
-        <geom name="gate4_left_post" type="box" pos="29.0 -6.63 8.00" size="0.24 6.00 8.00" material="gate_material_d"/>
-        <geom name="gate4_right_post" type="box" pos="29.0 6.63 8.00" size="0.24 6.00 8.00" material="gate_material_d"/>
-        <geom name="gate4_top_beam" type="box" pos="29.0 0.00 11.1725" size="0.24 12.63 7.00" material="gate_material_d"/>
-        <geom name="gate4_bottom_beam" type="box" pos="29.0 0.00 0.96375" size="0.24 12.63 0.96375" material="gate_material_d"/>
+        <geom name="cone_cluster" type="cylinder" pos="45.0 0.0 0.65" size="0.95 0.65" material="cone_material"/>
+        <geom name="cone_cluster_mid" type="cylinder" pos="45.0 0.0 1.35" size="0.62 0.55" material="cone_material"/>
+        <geom name="cone_cluster_tip" type="cylinder" pos="45.0 0.0 1.95" size="0.32 0.35" material="cone_material"/>
 
-        <geom name="gate5_left_post" type="box" pos="42.0 -6.71 8.00" size="0.24 6.00 8.00" material="gate_material_e"/>
-        <geom name="gate5_right_post" type="box" pos="42.0 6.71 8.00" size="0.24 6.00 8.00" material="gate_material_e"/>
-        <geom name="gate5_top_beam" type="box" pos="42.0 0.00 8.80" size="0.24 12.71 7.00" material="gate_material_e"/>
-        <geom name="gate5_bottom_beam" type="box" pos="42.0 0.00 0.150" size="0.24 12.71 0.150" material="gate_material_e"/>
+        <geom name="tall_tower" type="box" pos="58.0 0.0 3.40" size="1.05 2.55 3.40" material="solid_obstacle_material"/>
+        <geom name="tall_tower_cap" type="sphere" pos="58.0 0.0 7.05" size="0.58" material="warning_obstacle_material"/>
 
-        <geom name="side_box_a" type="box" pos="8.8 -6.1 0.65" size="0.60 0.55 0.65" material="solid_obstacle_material"/>
-        <geom name="side_box_b" type="box" pos="14.3 6.2 0.95" size="0.55 0.65 0.95" material="solid_obstacle_material"/>
-        <geom name="side_box_c" type="box" pos="24.8 -6.4 1.05" size="0.55 0.75 1.05" material="solid_obstacle_material"/>
-        <geom name="side_cylinder_a" type="cylinder" pos="9.8 5.8 0.90" size="0.42 0.90" material="warning_obstacle_material"/>
-        <geom name="side_cylinder_b" type="cylinder" pos="19.5 -6.2 0.90" size="0.45 0.90" material="warning_obstacle_material"/>
-        <geom name="floating_beam_a" type="box" pos="15.0 -5.4 2.15" size="1.15 0.18 0.14" material="warning_obstacle_material"/>
-        <geom name="floating_beam_b" type="box" pos="26.2 5.5 2.10" size="1.25 0.18 0.14" material="warning_obstacle_material"/>
+        <geom name="gate3_left_post" type="box" pos="72.0 -6.74 8.00" size="0.24 6.00 8.00" material="gate_material_c"/>
+        <geom name="gate3_right_post" type="box" pos="72.0 6.74 8.00" size="0.24 6.00 8.00" material="gate_material_c"/>
+        <geom name="gate3_top_beam" type="box" pos="72.0 0.00 11.35" size="0.24 12.74 7.00" material="gate_material_c"/>
+        <geom name="gate3_bottom_beam" type="box" pos="72.0 0.00 0.35" size="0.24 3.15 0.35" material="gate_material_c"/>
+
+        <geom name="side_box_d" type="box" pos="86.0 0.0 2.25" size="1.05 2.60 0.55" material="solid_obstacle_material"/>
+        <geom name="side_box_d_marker" type="box" pos="86.05 0.0 3.02" size="0.85 2.90 0.10" material="warning_obstacle_material"/>
+
+        <geom name="gate4_left_post" type="box" pos="102.0 -6.70 8.00" size="0.24 6.00 8.00" material="gate_material_e"/>
+        <geom name="gate4_right_post" type="box" pos="102.0 6.70 8.00" size="0.24 6.00 8.00" material="gate_material_e"/>
+        <geom name="gate4_top_beam" type="box" pos="102.0 0.00 8.82" size="0.24 12.70 7.00" material="gate_material_e"/>
+        <geom name="gate4_bottom_beam" type="box" pos="102.0 0.00 0.16" size="0.24 12.70 0.16" material="gate_material_e"/>
+
+        <geom name="clutter_box_01" type="box" pos="5.5 -8.8 0.55" size="0.55 1.10 0.55" material="clutter_material"/>
+        <geom name="clutter_box_02" type="box" pos="10.0 8.9 0.75" size="0.80 0.65 0.75" material="clutter_material"/>
+        <geom name="clutter_cyl_01" type="cylinder" pos="23.5 -9.2 0.85" size="0.46 0.85" material="warning_obstacle_material"/>
+        <geom name="clutter_box_03" type="box" pos="39.5 9.5 1.15" size="1.20 0.52 1.15" euler="0 0 0.45" material="clutter_material"/>
+        <geom name="clutter_cyl_02" type="cylinder" pos="51.0 -9.0 1.05" size="0.58 1.05" material="clutter_material"/>
+        <geom name="clutter_box_04" type="box" pos="65.0 9.3 0.65" size="0.65 1.40 0.65" material="warning_obstacle_material"/>
+        <geom name="clutter_box_05" type="box" pos="80.0 -9.4 0.95" size="1.25 0.52 0.95" euler="0 0 -0.35" material="clutter_material"/>
+        <geom name="clutter_cyl_03" type="cylinder" pos="95.0 9.0 0.75" size="0.42 0.75" material="warning_obstacle_material"/>
 
         <body name="x2_1" pos="0.0 0.0 0.1" childclass="x2">
             <freejoint/>

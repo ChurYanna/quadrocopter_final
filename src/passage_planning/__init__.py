@@ -51,6 +51,17 @@ from .online_replanner import (
 )
 from .semantic_panel import SemanticTracePanel
 from .semantic_trace import SemanticTraceEvent, SemanticTraceRecorder
+from .visual_observer import VisualFrameCapture, VisualFrameRecord
+from .multimodal_vlm import (
+    MockVLMStrategyGenerator,
+    MultimodalVLMInputPacket,
+    QwenDashScopeVLMPlanGenerator,
+    QwenDashScopeVLMStrategyGenerator,
+    VLMStrategyResult,
+    build_multimodal_vlm_input_packet,
+    summarize_multimodal_vlm_packet,
+    summarize_vlm_strategy_result,
+)
 
 __all__ = [
     'FormationState',
@@ -99,4 +110,14 @@ __all__ = [
     'SemanticTracePanel',
     'SemanticTraceEvent',
     'SemanticTraceRecorder',
+    'VisualFrameCapture',
+    'VisualFrameRecord',
+    'MockVLMStrategyGenerator',
+    'MultimodalVLMInputPacket',
+    'QwenDashScopeVLMPlanGenerator',
+    'QwenDashScopeVLMStrategyGenerator',
+    'VLMStrategyResult',
+    'build_multimodal_vlm_input_packet',
+    'summarize_multimodal_vlm_packet',
+    'summarize_vlm_strategy_result',
 ]

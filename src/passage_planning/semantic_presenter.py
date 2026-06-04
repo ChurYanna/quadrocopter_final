@@ -26,6 +26,12 @@ def target_policy_cn(policy: str) -> str:
     mapping = {
         'predictive_center_crossing': '预测洞口中心穿越',
         'edge_bypass': '实体边缘绕行',
+        'side_bypass_left': '左侧绕行',
+        'side_bypass_right': '右侧绕行',
+        'split_by_lane_bypass': '按队形分流绕行',
+        'overpass': '顶部越障',
+        'underpass': '底部下穿',
+        'hybrid_over_or_side': '侧绕/越顶自适应',
         'hold_and_reform': '等待并恢复编队',
     }
     return mapping.get(str(policy), str(policy))
@@ -54,17 +60,20 @@ def summarize_scene(field: ObstacleField, formation: FormationState, mission: Mi
 
     return {
         'summary': (
-            f'检测到 {formation.num_uavs} 架无人机，队形横向宽度约 {formation.width_y:.2f} m；'
-            f'障碍区共 {field.count} 个障碍，其中 {aperture_count} 个穿越型、{solid_count} 个实体型。'
+            f'SFSC 传感器融合结构化上下文已形成：包含 {formation.num_uavs} 架无人机状态，'
+            f'队形横向宽度约 {formation.width_y:.2f} m；局部障碍上下文共 {field.count} 个障碍，'
+            f'其中 {aperture_count} 个穿越型、{solid_count} 个实体型。'
         ),
         'details': {
+            '上下文名称': 'SFSC - Sensor-Fused Structured Context',
+            '含义': '由非视觉传感器/状态估计/无人机通信/快速感知模块组织出的结构化高层上下文',
             '无人机数量': int(formation.num_uavs),
             '当前队形宽度': f'{formation.width_y:.2f} m',
             '单机安全宽度': f'{formation.single_file_width:.2f} m',
             '任务偏好': mission.priority,
             '允许临时解散': bool(mission.allow_disband),
             '最后恢复编队': bool(mission.recover_after_last_obstacle),
-            '障碍语义列表': obstacle_lines,
+            '障碍上下文列表': obstacle_lines,
         },
     }
 
@@ -96,9 +105,11 @@ def summarize_llm_input(scene_context: dict[str, Any]) -> dict[str, Any]:
             )
     return {
         'summary': (
-            'LLM 接收的是结构化语义摘要，而不是 MuJoCo 原始状态或底层速度指令。'
+            'LLM 接收的是 SFSC 传感器融合结构化上下文，而不是 MuJoCo 原始状态或底层速度指令。'
         ),
         'details': {
+            '输入上下文': 'SFSC - Sensor-Fused Structured Context',
+            '上下文来源说明': '由非视觉传感器信息、无人机状态、队形通信状态、距离/障碍估计和规划状态快速编码形成',
             '任务类型': scene_context.get('task', 'unknown'),
             '无人机数量': int(team.get('num_uavs', 0)),
             '初始队形': team.get('formation', 'unknown'),

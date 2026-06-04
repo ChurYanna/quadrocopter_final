@@ -23,7 +23,16 @@ class StrategyValidator:
     """
 
     VALID_MODES = {'formation', 'snake_sequence', 'bypass'}
-    VALID_TARGET_POLICIES = {'predictive_center_crossing', 'edge_bypass', 'hold_and_reform'}
+    SOLID_BYPASS_TARGET_POLICIES = {
+        'edge_bypass',
+        'side_bypass_left',
+        'side_bypass_right',
+        'split_by_lane_bypass',
+        'overpass',
+        'underpass',
+        'hybrid_over_or_side',
+    }
+    VALID_TARGET_POLICIES = {'predictive_center_crossing', 'hold_and_reform'} | SOLID_BYPASS_TARGET_POLICIES
 
     def __init__(
         self,
@@ -39,6 +48,7 @@ class StrategyValidator:
         high_risk_lateral_margin: float = 0.20,
         min_final_recovery_clearance_x: float = 1.00,
         min_inter_obstacle_clearance_x: float = 0.50,
+        max_overpass_target_z: float = 3.40,
     ):
         self.min_time_slot_interval = float(min_time_slot_interval)
         self.min_clearance_x = float(min_clearance_x)
@@ -52,6 +62,7 @@ class StrategyValidator:
         self.high_risk_lateral_margin = float(high_risk_lateral_margin)
         self.min_final_recovery_clearance_x = float(min_final_recovery_clearance_x)
         self.min_inter_obstacle_clearance_x = float(min_inter_obstacle_clearance_x)
+        self.max_overpass_target_z = float(max_overpass_target_z)
 
     def validate(self, plan: PassagePlan, field: ObstacleField, formation: FormationState) -> ValidationResult:
         issues = self._validate(plan, field, formation, repaired=False)
@@ -175,6 +186,12 @@ class StrategyValidator:
 
             if strategy.mode not in self.VALID_MODES:
                 self._error(issues, 'invalid_strategy_mode', f'invalid strategy mode for {strategy.obstacle_id}')
+            if strategy.mode == 'formation':
+                self._error(
+                    issues,
+                    'formation_mode_not_allowed_in_obstacle_zone',
+                    f'formation mode is reserved for post-obstacle recovery, not obstacle strategy: {strategy.obstacle_id}',
+                )
             if strategy.target_policy not in self.VALID_TARGET_POLICIES:
                 self._error(issues, 'invalid_target_policy', f'invalid target policy for {strategy.obstacle_id}')
             if strategy.obstacle_index <= previous_index:
@@ -219,8 +236,44 @@ class StrategyValidator:
 
         if obstacle.function == 'solid' and strategy.mode != 'bypass':
             self._error(issues, 'solid_requires_bypass', f'solid obstacle requires bypass mode: {strategy.obstacle_id}')
+        if obstacle.function == 'solid' and strategy.target_policy not in self.SOLID_BYPASS_TARGET_POLICIES:
+            self._error(issues, 'solid_policy_mismatch', f'solid obstacle requires a bypass target policy: {strategy.obstacle_id}')
         if obstacle.function == 'aperture' and strategy.mode == 'bypass':
             self._warning(issues, 'aperture_bypass', f'aperture obstacle is bypassed instead of crossed: {strategy.obstacle_id}')
+        if obstacle.function == 'aperture' and strategy.mode == 'snake_sequence' and strategy.target_policy != 'predictive_center_crossing':
+            self._error(issues, 'aperture_snake_policy_mismatch', f'aperture snake strategy must use predictive center crossing: {strategy.obstacle_id}')
+        if strategy.target_policy == 'underpass':
+            if obstacle.size_z is None:
+                self._error(
+                    issues,
+                    'underpass_geometry_unknown',
+                    f'underpass requires known solid obstacle height for {strategy.obstacle_id}',
+                )
+                return
+            bottom_clearance = float(obstacle.pass_z) - 0.5 * abs(float(obstacle.size_z or 0.0))
+            required_bottom_clearance = float(formation.initial_z + formation.uav_radius_z + 0.08)
+            if bottom_clearance < required_bottom_clearance:
+                self._error(
+                    issues,
+                    'underpass_clearance_too_small',
+                    f'underpass target is not geometrically feasible for {strategy.obstacle_id}',
+                )
+        if strategy.target_policy == 'overpass':
+            if obstacle.size_z is None:
+                self._error(
+                    issues,
+                    'overpass_geometry_unknown',
+                    f'overpass requires known solid obstacle height for {strategy.obstacle_id}',
+                )
+                return
+            top_height = float(obstacle.pass_z) + 0.5 * abs(float(obstacle.size_z or 0.0))
+            required_overpass_z = top_height + float(formation.uav_radius_z + 0.08)
+            if required_overpass_z > self.max_overpass_target_z:
+                self._error(
+                    issues,
+                    'overpass_target_too_high',
+                    f'overpass target is too high for {strategy.obstacle_id}',
+                )
 
         aperture_width = float(obstacle.aperture_width or 0.0)
         if strategy.mode == 'snake_sequence':

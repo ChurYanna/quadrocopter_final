@@ -154,7 +154,7 @@ class StrategyExecutionHelper:
         clearance_z: float,
         route_hint: str = 'auto',
     ) -> np.ndarray:
-        """Generate a deterministic left/right/over waypoint for a solid obstacle.
+        """Generate a deterministic left/right/over/under waypoint for a solid obstacle.
 
         This helper is intentionally simple and stable.  It gives the future
         mixed-obstacle executor a bounded local target without pretending to be
@@ -166,18 +166,40 @@ class StrategyExecutionHelper:
         half_y = 0.5 * abs(float(size[1]))
         half_z = 0.5 * abs(float(size[2]))
         target_x = float(center[0] + 0.5 * abs(float(size[0])) + clearance_xy)
+        raw_under_z = float(center[2] - half_z - clearance_z)
+        under_z = max(0.30, raw_under_z)
 
         candidates = {
             'left': np.array([target_x, center[1] - half_y - clearance_xy, pos[2]], dtype=float),
             'right': np.array([target_x, center[1] + half_y + clearance_xy, pos[2]], dtype=float),
             'over': np.array([target_x, float(original_y), center[2] + half_z + clearance_z], dtype=float),
+            'under': np.array([target_x, float(original_y), under_z], dtype=float),
         }
         if route_hint in candidates:
             return candidates[route_hint]
 
         preferred_side = 'left' if float(original_y) <= float(center[1]) else 'right'
         side_target = candidates[preferred_side]
-        over_target = candidates['over']
         side_cost = float(np.linalg.norm(side_target[:2] - pos[:2]))
-        over_cost = float(np.linalg.norm(over_target[:2] - pos[:2]) + 1.4 * abs(over_target[2] - pos[2]))
-        return side_target if side_cost <= over_cost else over_target
+
+        vertical_candidates = [('over', candidates['over'])]
+        if raw_under_z > 0.35:
+            vertical_candidates.insert(0, ('under', candidates['under']))
+        _, vertical_target = min(
+            vertical_candidates,
+            key=lambda item: float(
+                np.linalg.norm(item[1][:2] - pos[:2])
+                + 0.45 * abs(float(item[1][2] - pos[2]))
+            ),
+        )
+        vertical_cost = float(
+            np.linalg.norm(vertical_target[:2] - pos[:2])
+            + 0.45 * abs(float(vertical_target[2] - pos[2]))
+        )
+
+        # UAVs can usually exploit vertical free space faster than a wide
+        # lateral detour, so auto mode deliberately prefers feasible over/under
+        # routes unless the side route is clearly cheaper.
+        if vertical_cost <= 1.25 * side_cost:
+            return vertical_target
+        return side_target

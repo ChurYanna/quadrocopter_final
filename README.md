@@ -1,19 +1,19 @@
 # SV-STCP Quadrocopter Avoidance
 
-面向复杂动态混合障碍区的多无人机语义验证时空协同通行算法。
+面向复杂动态混合障碍区的多无人机 SFSC 验证时空协同通行算法。
 
-本仓库是一个基于 MuJoCo 的多无人机协同避障研究工程。当前核心工作不是普通单机避障，而是研究多架无人机在动态窄洞、实体绕行障碍、顶部越障障碍混合出现时，如何通过“语义规划 + 安全验证 + 底层稳定执行”完成协同通行。
+本仓库是一个基于 MuJoCo 的多无人机协同避障研究工程。当前核心工作不是普通单机避障，而是研究多架无人机在动态窄洞、实体绕行障碍、顶部越障障碍混合出现时，如何通过“SFSC 传感器融合结构化上下文 + LLM 高层规划 + 安全验证 + 底层稳定执行”完成协同通行。
 
 算法名称：
 
 ```text
-SV-STCP: Semantics-Verified Spatio-Temporal Cooperative Passage
+SV-STCP: Sensor-Fused/Semantics-Verified Spatio-Temporal Cooperative Passage
 ```
 
 中文可表述为：
 
 ```text
-语义验证的多无人机动态混合障碍时空协同通行算法
+传感器融合结构化上下文验证的多无人机动态混合障碍时空协同通行算法
 ```
 
 ## 1. 项目核心思想
@@ -21,7 +21,7 @@ SV-STCP: Semantics-Verified Spatio-Temporal Cooperative Passage
 本项目的核心不是让 LLM 直接控制无人机，而是将系统分成三层：
 
 ```text
-LLM/语义层：理解障碍语义，生成高层通行策略
+SFSC/LLM 层：融合非视觉传感器上下文，生成高层通行策略
 验证/规划层：检查策略合法性，提供确定性 fallback
 执行/控制层：完成连续飞行控制、时序穿越、侧绕、越顶和恢复编队
 ```
@@ -30,7 +30,7 @@ LLM/语义层：理解障碍语义，生成高层通行策略
 
 - LLM 不输出电机推力；
 - LLM 不直接输出每一帧速度；
-- LLM 输出的是高层语义策略；
+- LLM 输出的是高层通行策略；
 - 所有 LLM 策略必须通过安全验证器；
 - 如果 LLM 超时、失败或输出不安全，系统会自动回退确定性策略；
 - 在线 LLM 重规划采用异步机制，不阻塞 viewer 和控制循环。
@@ -53,7 +53,7 @@ LLM/语义层：理解障碍语义，生成高层通行策略
 - 安全验证器与 fallback；
 - 有限视野在线感知；
 - 异步在线 LLM 重规划；
-- 实时语义证据链面板，用于展示 LLM 输入、输出、验证和执行反馈。
+- 实时 SFSC + LLM 证据链面板，用于展示传感器融合结构化上下文、LLM 输入/输出、验证和执行反馈。
 
 ## 3. 仓库结构
 
@@ -66,8 +66,8 @@ src/
 
 src/passage_planning/
     SV-STCP 的核心算法模块
-    包括语义场景编码、可通行性分析、策略规划、LLM 接口、
-    安全验证、在线感知、异步重规划、语义证据链面板和指标统计
+    包括 SFSC 编码、可通行性分析、策略规划、LLM 接口、
+    安全验证、在线感知、异步重规划、SFSC + LLM 证据链面板和指标统计
 
 tests/
     当前稳定 demo、策略框架测试、LLM 接口测试、在线感知与重规划测试
@@ -91,7 +91,7 @@ conda activate quadrocopter
 pip install -r requirements.txt
 ```
 
-如果使用 Ubuntu，并且需要打开语义证据链面板，建议确认系统具备 Tk：
+如果使用 Ubuntu，并且需要打开 SFSC + LLM 证据链面板，建议确认系统具备 Tk：
 
 ```bash
 sudo apt-get install python3-tk
@@ -106,8 +106,13 @@ MuJoCo viewer 需要图形显示环境。如果在服务器或远程终端运行
 ```bash
 export DASHSCOPE_API_KEY='你的 DashScope API Key'
 export DASHSCOPE_MODEL='qwen-plus'
+export DASHSCOPE_VLM_MODEL='qwen3-vl-flash'
+export DASHSCOPE_VLM_MAX_TOKENS='900'
 export DASHSCOPE_BASE_URL='https://dashscope.aliyuncs.com/compatible-mode/v1'
 ```
+
+`DASHSCOPE_VLM_MODEL` 默认建议使用 flash 轻量版本，便于降低前视 RGB + SFSC 在线重规划的等待时间。如果本地 `.env.local` 中配置了其他模型，实际运行会优先使用 `.env.local` 或 shell 环境变量中的值。
+`DASHSCOPE_VLM_MAX_TOKENS` 用于限制 VLM JSON 输出长度，避免模型生成过长解释拖慢在线返回。
 
 也可以新建 `.env.local`：
 
@@ -135,7 +140,7 @@ python -m unittest \
 
 这些测试覆盖：
 
-- 障碍语义编码；
+- SFSC 障碍上下文编码；
 - 可通行性分析；
 - 时空协同策略生成；
 - 策略 JSON 导入导出；
@@ -156,7 +161,7 @@ python -m unittest tests.test_dynamic_mixed_bypass_obstacle_zone.TestDynamicMixe
 运行后会看到：
 
 1. MuJoCo viewer 中五架无人机通过动态混合障碍区；
-2. 语义证据链面板同步显示 LLM 相关信息；
+2. SFSC + LLM 证据链面板同步显示传感器融合上下文、LLM 相关信息和执行反馈；
 3. 在线重规划事件显示 fallback、LLM submitted、pending、accepted/rejected 等状态；
 4. demo 完成后语义面板不会自动关闭，需要手动关闭，便于复盘 LLM 和底层执行状态。
 
@@ -171,13 +176,33 @@ python -m unittest tests.test_dynamic_mixed_bypass_obstacle_zone.TestDynamicMixe
 - 安全验证与 fallback；
 - 最终恢复编队。
 
-## 8. 语义证据链面板说明
+## 8. SFSC + LLM 证据链面板说明
 
-语义证据链面板用于回答“LLM 到底做了什么”：
+SFSC 是 Sensor-Fused Structured Context，中文为“传感器融合结构化上下文”。它不是直接把 XML 或仿真底层变量交给 LLM，也不是把视觉图像重新画成语义图后再喂给模型。在真实系统中，SFSC 对应的是 IMU/里程计、雷达/测距、机间通信、控制器状态和快速非 VLM 感知模块融合后的结构化上下文；在当前 MuJoCo demo 中，系统用仿真运行时状态构造同样格式的 SFSC，保证实验可复现。
+
+后续多模态扩展的输入形式是：
 
 ```text
-场景语义 / LLM 输入：
-    当前看见了哪些障碍、障碍是什么类型、运动和尺寸语义是什么
+无人机机载前视 RGB 图像 + SFSC 非视觉结构化上下文
+        ↓
+VLM/LLM 高层策略分析
+        ↓
+安全验证器
+        ↓
+异步策略缓冲区
+        ↓
+底层稳定执行
+```
+
+当前视觉关键帧已经从 MuJoCo 场景俯视图切换为“当前 x 方向最前方 UAV”的机载前视 RGB 相机。系统会在 `uav0_front_rgb` 到 `uav4_front_rgb` 之间动态选择最前方无人机视角，避免固定后方无人机被前机遮挡。这类图像用于模拟真实探路无人机摄像头看到的局部障碍外观和通道形态，而不是从全局视角重新绘制语义图。
+
+主 demo 当前采用统一的多模态 VLM 在线策略链路：系统在有限视野发现待规划障碍时，将最近的最前方 UAV 前视 RGB 和 SFSC 一起输入 Qwen VLM，由 VLM 输出标准 `PassagePlan` JSON。该策略必须通过 `StrategyValidator`，验证通过后才会合并到在线控制缓存；如果真实 VLM 超时、失败或输出不合法，确定性 fallback 会继续保持控制。
+
+SFSC + LLM 证据链面板用于回答“LLM 到底接收了什么上下文、输出了什么策略、系统是否采用”：
+
+```text
+SFSC 上下文 / LLM 输入：
+    非视觉传感器、无人机状态、队形通信、距离估计和规划状态被快速编码成什么结构化上下文
 
 LLM 宏观策略 / 安全验证：
     LLM 输出了什么通行策略、是否通过验证、是否 fallback
@@ -192,7 +217,7 @@ LLM 宏观策略 / 安全验证：
 建议录屏时同时展示 MuJoCo viewer 和该面板，这样可以直观看到：
 
 ```text
-环境语义提取 -> LLM 策略生成 -> 安全验证 -> 底层执行
+SFSC 上下文形成 -> LLM 策略生成 -> 安全验证 -> 底层执行
 ```
 
 ## 9. 算法流程
@@ -200,9 +225,9 @@ LLM 宏观策略 / 安全验证：
 整体流程如下：
 
 ```text
-MuJoCo 场景 / 在线感知
+非视觉传感器融合 / 在线感知
         ↓
-语义场景编码
+SFSC 编码
         ↓
 可通行性分析
         ↓
@@ -223,9 +248,9 @@ LLM 高层策略生成
 
 ## 10. 核心创新点
 
-### 10.1 语义化障碍建模
+### 10.1 SFSC 障碍上下文建模
 
-障碍不再只是几何体，而是带有功能属性的语义对象：
+障碍不再只是几何体，而是由非视觉传感器融合得到的可规划上下文对象：
 
 - 穿越型障碍；
 - 实体绕行障碍；
@@ -268,7 +293,7 @@ LLM 只做高层策略建议，不直接控制飞行。策略必须通过验证�
 
 ### 10.5 可解释语义呈现
 
-语义证据链面板将 LLM 的输入、输出、验证和执行反馈全部显示出来，使算法不只是“用了 LLM”，而是能直观看到 LLM 如何参与决策。
+SFSC + LLM 证据链面板将传感器融合结构化上下文、LLM 输入/输出、验证和执行反馈全部显示出来，使算法不只是“用了 LLM”，而是能直观看到 LLM 如何在非视觉传感器上下文约束下参与决策。
 
 ## 11. 常见问题
 
@@ -290,7 +315,7 @@ echo $DASHSCOPE_BASE_URL
 
 ### 11.3 demo 结束后 unittest 不退出
 
-这是预期行为。为了方便复盘，语义证据链面板在 demo 完成后会保持打开。手动关闭面板窗口后，unittest 会继续结束。
+这是预期行为。为了方便复盘，SFSC + LLM 证据链面板在 demo 完成后会保持打开。手动关闭面板窗口后，unittest 会继续结束。
 
 ### 11.4 如何只验证算法、不打开界面
 
@@ -307,7 +332,7 @@ LLM 高层策略
 安全验证
 异步在线重规划
 底层稳定执行
-语义证据链展示
+SFSC + LLM 证据链展示
 ```
 
 后续建议围绕该稳定版本开展系统实验和论文整理，包括：

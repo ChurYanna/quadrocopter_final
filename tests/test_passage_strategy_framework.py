@@ -261,6 +261,7 @@ class TestPassageStrategyFramework(unittest.TestCase):
             original_y=-1.0,
             clearance_xy=0.6,
             clearance_z=0.4,
+            route_hint='left',
         )
 
         self.assertTrue(validation.valid, msg=validation.messages)
@@ -268,6 +269,185 @@ class TestPassageStrategyFramework(unittest.TestCase):
         self.assertEqual(plan.mode, 'bypass')
         self.assertEqual(plan.obstacle_strategies[0].target_policy, 'edge_bypass')
         self.assertLess(target[1], -1.0)
+
+    def test_solid_route_family_policies_are_validated(self):
+        formation = FormationState(
+            num_uavs=1,
+            original_y=(0.0,),
+            initial_z=0.3,
+            uav_radius_xy=0.38,
+            uav_radius_z=0.22,
+            nominal_speed_x=1.0,
+            max_speed_xy=2.0,
+            max_speed_z=0.8,
+            max_lateral_speed=2.0,
+        )
+        field = ObstacleField((
+            ObstacleDescriptor(
+                obstacle_id='beam1',
+                obstacle_type='elevated_beam',
+                function='solid',
+                x=4.0,
+                center_y=0.0,
+                pass_z=2.0,
+                size_x=1.0,
+                size_y=3.0,
+                size_z=1.0,
+            ),
+        ))
+        reports = PassabilityEvaluator().evaluate_field(field, formation, MissionPreference())
+        plan = SpatioTemporalStrategyPlanner(
+            gate_observe_distance_x=2.0,
+            gate_pass_clear_x=1.0,
+            snake_spacing_x=0.8,
+        ).plan(field, formation, MissionPreference(), reports)
+
+        overpass_plan = replace(
+            plan,
+            obstacle_strategies=(
+                replace(plan.obstacle_strategies[0], target_policy='overpass'),
+            ),
+        )
+        underpass_plan = replace(
+            plan,
+            obstacle_strategies=(
+                replace(plan.obstacle_strategies[0], target_policy='underpass'),
+            ),
+        )
+        under_target = StrategyExecutionHelper.bypass_target(
+            position=np.array([2.0, 0.0, 0.9]),
+            obstacle_center=np.array([4.0, 0.0, 2.0]),
+            obstacle_size=np.array([1.0, 3.0, 1.0]),
+            original_y=0.0,
+            clearance_xy=0.6,
+            clearance_z=0.4,
+            route_hint='under',
+        )
+
+        self.assertTrue(StrategyValidator().validate(overpass_plan, field, formation).valid)
+        self.assertTrue(StrategyValidator().validate(underpass_plan, field, formation).valid)
+        self.assertLess(under_target[2], 1.5)
+        self.assertGreaterEqual(under_target[2], 0.3)
+
+    def test_underpass_policy_rejects_low_solid_obstacle(self):
+        formation = FormationState(
+            num_uavs=1,
+            original_y=(0.0,),
+            initial_z=0.3,
+            uav_radius_xy=0.38,
+            uav_radius_z=0.22,
+            nominal_speed_x=1.0,
+        )
+        field = ObstacleField((
+            ObstacleDescriptor(
+                obstacle_id='low_box',
+                obstacle_type='box',
+                function='solid',
+                x=4.0,
+                center_y=0.0,
+                pass_z=0.8,
+                size_x=1.0,
+                size_y=2.0,
+                size_z=1.0,
+            ),
+        ))
+        reports = PassabilityEvaluator().evaluate_field(field, formation, MissionPreference())
+        plan = SpatioTemporalStrategyPlanner(
+            gate_observe_distance_x=2.0,
+            gate_pass_clear_x=1.0,
+            snake_spacing_x=0.8,
+        ).plan(field, formation, MissionPreference(), reports)
+        underpass_plan = replace(
+            plan,
+            obstacle_strategies=(
+                replace(plan.obstacle_strategies[0], target_policy='underpass'),
+            ),
+        )
+        validation = StrategyValidator().validate(underpass_plan, field, formation)
+        codes = {issue.code for issue in validation.issues}
+
+        self.assertFalse(validation.valid)
+        self.assertIn('underpass_clearance_too_small', codes)
+
+    def test_underpass_policy_rejects_unknown_solid_height(self):
+        formation = FormationState(
+            num_uavs=1,
+            original_y=(0.0,),
+            initial_z=0.3,
+            uav_radius_xy=0.38,
+            uav_radius_z=0.22,
+            nominal_speed_x=1.0,
+        )
+        field = ObstacleField((
+            ObstacleDescriptor(
+                obstacle_id='unknown_box',
+                obstacle_type='box',
+                function='solid',
+                x=4.0,
+                center_y=0.0,
+                pass_z=0.8,
+                size_x=1.0,
+                size_y=2.0,
+                size_z=None,
+            ),
+        ))
+        reports = PassabilityEvaluator().evaluate_field(field, formation, MissionPreference())
+        plan = SpatioTemporalStrategyPlanner(
+            gate_observe_distance_x=2.0,
+            gate_pass_clear_x=1.0,
+            snake_spacing_x=0.8,
+        ).plan(field, formation, MissionPreference(), reports)
+        underpass_plan = replace(
+            plan,
+            obstacle_strategies=(
+                replace(plan.obstacle_strategies[0], target_policy='underpass'),
+            ),
+        )
+        validation = StrategyValidator().validate(underpass_plan, field, formation)
+        codes = {issue.code for issue in validation.issues}
+
+        self.assertFalse(validation.valid)
+        self.assertIn('underpass_geometry_unknown', codes)
+
+    def test_overpass_policy_rejects_tall_solid_obstacle(self):
+        formation = FormationState(
+            num_uavs=1,
+            original_y=(0.0,),
+            initial_z=0.3,
+            uav_radius_xy=0.38,
+            uav_radius_z=0.22,
+            nominal_speed_x=1.0,
+        )
+        field = ObstacleField((
+            ObstacleDescriptor(
+                obstacle_id='tower',
+                obstacle_type='very_tall_obstacle',
+                function='solid',
+                x=4.0,
+                center_y=0.0,
+                pass_z=3.4,
+                size_x=1.0,
+                size_y=3.0,
+                size_z=6.8,
+            ),
+        ))
+        reports = PassabilityEvaluator().evaluate_field(field, formation, MissionPreference())
+        plan = SpatioTemporalStrategyPlanner(
+            gate_observe_distance_x=2.0,
+            gate_pass_clear_x=1.0,
+            snake_spacing_x=0.8,
+        ).plan(field, formation, MissionPreference(), reports)
+        overpass_plan = replace(
+            plan,
+            obstacle_strategies=(
+                replace(plan.obstacle_strategies[0], target_policy='overpass'),
+            ),
+        )
+        validation = StrategyValidator().validate(overpass_plan, field, formation)
+        codes = {issue.code for issue in validation.issues}
+
+        self.assertFalse(validation.valid)
+        self.assertIn('overpass_target_too_high', codes)
 
     def test_execution_helper_enforces_temporal_slot_at_commit_region(self):
         _, _, _, plan, _ = self._build_strategy_context()

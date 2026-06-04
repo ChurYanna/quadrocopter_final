@@ -13,8 +13,10 @@ class TestDynamicMixedBypassObstacleZone(DynamicMixedBypassObstacleZoneConfig, T
     DEBUG_PASSAGE_PLAN = True
     SEMANTIC_PANEL_ENABLE = True
     SEMANTIC_TRACE_CONSOLE = False
+    VISUAL_TRACE_ENABLE = True
+    VLM_PROVIDER = 'off'
     ONLINE_REPLANNING_ENABLE = True
-    ONLINE_REPLANNING_PROVIDER = 'qwen'
+    ONLINE_REPLANNING_PROVIDER = 'qwen_vlm'
 
     def test_dynamic_mixed_bypass_obstacle_zone_viewer(self):
         if self.DEBUG_PASSAGE_PLAN:

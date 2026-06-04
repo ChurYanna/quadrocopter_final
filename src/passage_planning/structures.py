@@ -10,7 +10,7 @@ PassageMode = Literal['formation', 'snake_sequence', 'bypass']
 
 @dataclass(frozen=True)
 class ObstacleDescriptor:
-    """Structured semantic description of one obstacle in the passage field."""
+    """One obstacle item in the sensor-fused structured context (SFSC)."""
 
     obstacle_id: str
     obstacle_type: str
@@ -32,7 +32,7 @@ class ObstacleDescriptor:
 
 @dataclass(frozen=True)
 class ObstacleField:
-    """Ordered obstacle-zone description used by the deterministic planner."""
+    """Ordered SFSC obstacle-zone description used by the planner."""
 
     obstacles: tuple[ObstacleDescriptor, ...]
 
